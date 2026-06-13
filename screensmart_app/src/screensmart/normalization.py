@@ -35,3 +35,12 @@ def phon(tok: str) -> str:
         return jellyfish.metaphone(tok) or tok[:4]
     except Exception:
         return tok[:4]
+
+
+_NONALNUM = re.compile(r"[^a-z0-9]")
+
+
+def norm_id(s: str) -> str:
+    """Canonicalise an identity number (passport / national ID) for exact comparison:
+    keep only alphanumerics, upper-cased ('NRN 89.01-529' -> 'NRN8901529')."""
+    return _NONALNUM.sub("", (s or "").lower()).upper()

@@ -4,7 +4,7 @@ We train all of these and let `train_model.py` pick the winner on held-out data.
 """
 from __future__ import annotations
 import numpy as np
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import GradientBoostingClassifier, HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -22,6 +22,18 @@ class LightGBMModel(PrecisionModel):
             n_estimators=300, learning_rate=0.05, num_leaves=31,
             subsample=0.9, colsample_bytree=0.9, random_state=42,
             n_jobs=-1, verbose=-1,
+        )
+
+
+class HistGBModel(PrecisionModel):
+    name = "hist_gb"
+
+    def _build(self):
+        """Histogram gradient boosting — fast, strong, smoother probabilities than the
+        plain GBT (helps push true matches above the review threshold)."""
+        return HistGradientBoostingClassifier(
+            max_iter=400, learning_rate=0.05, max_leaf_nodes=31,
+            l2_regularization=1.0, random_state=42,
         )
 
 
@@ -56,10 +68,11 @@ class EnsembleModel(PrecisionModel):
     name = "ensemble"
 
     def __init__(self):
-        """Compose the ensemble from one instance of each base model."""
+        """Compose the ensemble from diverse base models (two boosted-tree views, a
+        bagged-tree view, and a linear view) for lower-variance, higher-recall scores."""
         super().__init__()
         self.members: list[PrecisionModel] = [
-            LightGBMModel(), SklearnGBTModel(), LogisticModel()]
+            LightGBMModel(), HistGBModel(), LogisticModel()]
 
     def _build(self):  # not used; fit/predict are overridden
         """Unused — the ensemble fits its members directly."""
@@ -77,4 +90,4 @@ class EnsembleModel(PrecisionModel):
 
 
 ALL_MODELS: list[type[PrecisionModel]] = [
-    LightGBMModel, SklearnGBTModel, LogisticModel, EnsembleModel]
+    LightGBMModel, HistGBModel, LogisticModel, EnsembleModel]

@@ -11,7 +11,7 @@ import jellyfish
 from ..domain.models import SanctionedEntity, MatchFeatures
 from ..domain.enums import EntitySchema, CountryMatch
 from ..indexing.index import SanctionsIndex
-from ..normalization import norm, tokens, phon
+from ..normalization import norm, tokens, phon, norm_id
 
 
 def blended_score(token_sort: float, wratio: float) -> float:
@@ -27,14 +27,44 @@ def _country_match(query_country: str, entity: SanctionedEntity) -> CountryMatch
     return CountryMatch.MATCH if q in ecs else CountryMatch.MISMATCH
 
 
+def _dob_match(query_dob: str | None, entity: SanctionedEntity) -> float:
+    """+1 exact date, +0.6 same year, 0 unknown, -1 mismatch (a strong discriminator
+    between two people who share a name). Handles multi-valued entity DOBs like
+    '1948-07-16;1948-07-26' by matching against ANY listed date."""
+    if not query_dob or not entity.dob:
+        return 0.0
+    ent_dobs = [d.strip() for d in entity.dob.split(";") if d.strip()]
+    if query_dob in ent_dobs:
+        return 1.0
+    if any(query_dob[:4] == d[:4] for d in ent_dobs):
+        return 0.6
+    return -1.0
+
+
+def _id_match(query_ids: list[str] | None, entity: SanctionedEntity) -> float:
+    """+1 if any payment identifier exactly matches one of the entity's IDs — near-definitive."""
+    if not query_ids or not entity.identifiers:
+        return 0.0
+    ent_ids = {norm_id(i) for i in entity.identifiers if i}
+    return 1.0 if any(norm_id(q) in ent_ids for q in query_ids if q) else 0.0
+
+
 def build_features(query_name: str, query_country: str,
-                   entity: SanctionedEntity, index: SanctionsIndex
+                   entity: SanctionedEntity, index: SanctionsIndex,
+                   query_dob: str | None = None,
+                   query_ids: list[str] | None = None,
                    ) -> tuple[MatchFeatures, float, str]:
-    """Return (features, raw_fuzzy_score, best_matched_raw_name)."""
+    """Return (features, raw_fuzzy_score, best_matched_raw_name).
+
+    `query_dob` / `query_ids` are optional secondary identifiers from the payment; when
+    absent the identity features are 0 (no signal) and the model relies on the name.
+    """
     q = norm(query_name)
     qtok = tokens(q)
     qtok_set = set(qtok)
     qphon = {phon(t) for t in qtok_set}
+    dob_match = _dob_match(query_dob, entity)
+    id_match = _id_match(query_ids, entity)
 
     variants = index.entity_variants.get(entity.id, [])
     # Pick the best-matching variant with one C-level call (rapidfuzz process),
@@ -67,7 +97,7 @@ def build_features(query_name: str, query_country: str,
             len_ratio=0, n_query_tokens=len(qtok), n_cand_tokens=0,
             country_match=_country_match(query_country, entity),
             is_person=entity.schema_.is_person, schema_compatible=False,
-            matched_is_primary=False,
+            matched_is_primary=False, dob_match=dob_match, id_match=id_match,
         )
         return feats, 0.0, entity.name
 
@@ -108,6 +138,6 @@ def build_features(query_name: str, query_country: str,
         len_ratio=len_ratio, n_query_tokens=n_q, n_cand_tokens=n_c,
         country_match=_country_match(query_country, entity),
         is_person=entity.schema_.is_person, schema_compatible=schema_compatible,
-        matched_is_primary=best.is_primary,
+        matched_is_primary=best.is_primary, dob_match=dob_match, id_match=id_match,
     )
     return feats, best_raw, best.variant_raw

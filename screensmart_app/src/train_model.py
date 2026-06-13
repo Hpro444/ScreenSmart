@@ -33,8 +33,7 @@ from screensmart.model.dataset import build_training_pairs
 from screensmart.model.estimators import ALL_MODELS
 from screensmart.model.base import PrecisionModel
 from screensmart.screening.screener import SanctionsScreener
-from screensmart.evaluation import evaluate, _SANCTIONED
-from screensmart.domain.enums import VerdictType, Channel
+from screensmart.evaluation import evaluate, screen_row, _SANCTIONED
 
 SANCTIONED_RECALL = 0.93   # tau_low aims to catch this share of sanctioned into >= REVIEW
 REVIEW_BUDGET = 0.10       # ...but never send more than this share of traffic to a human
@@ -47,11 +46,8 @@ def transaction_probs(screener: SanctionsScreener, tx: pd.DataFrame
        whether we'd policy-label it MATCH or REVIEW)."""
     probs, truth_sanc = [], []
     for _, row in tx.iterrows():
-        if row["channel"] == Channel.CRYPTO.value:
-            r = screener.screen_wallet(row["wallet"])
-        else:
-            r = screener.screen_name(row["bene_name"], row.get("bene_country", ""))
-        probs.append(r.probability)
+        _v, p, _ms = screen_row(screener, row)
+        probs.append(p)
         truth_sanc.append(1 if row["scenario"] in _SANCTIONED else 0)
     return np.asarray(probs), np.asarray(truth_sanc)
 
@@ -85,13 +81,24 @@ def choose_thresholds(probs: np.ndarray, truth_sanc: np.ndarray,
     sr = sr[:-1]
     hi = np.where(sr >= SANCTIONED_RECALL)[0]
     tau_low_safety = float(sthr[hi[np.argmax(sthr[hi])]]) if len(hi) else 0.0
-    # queue budget: don't send more than REVIEW_BUDGET of traffic to a human
-    tau_low_budget = float(np.quantile(probs, 1.0 - REVIEW_BUDGET))
+    # queue budget — TIE-ROBUST: the lowest distinct cut whose MATCH+REVIEW share <= budget.
+    # (np.quantile breaks when a model piles many identical probabilities on one value, which
+    #  is exactly why the tree models used to flood REVIEW to 90%.)
+    tau_low_budget = _budget_threshold(probs, REVIEW_BUDGET)
     tau_low = max(tau_low_safety, tau_low_budget)   # more selective of the two
     tau_low = min(tau_low, tau_high)
     if tau_low >= tau_high:
         tau_low = tau_high * 0.5
     return round(tau_high, 4), round(tau_low, 4)
+
+
+def _budget_threshold(probs: np.ndarray, budget: float) -> float:
+    """Lowest distinct probability cut t such that fraction(probs >= t) <= budget.
+    Tie-robust (unlike np.quantile) — guarantees the realised review rate <= budget."""
+    for t in np.unique(probs):           # ascending distinct values
+        if float(np.mean(probs >= t)) <= budget:
+            return float(t)
+    return float(np.max(probs)) + 1e-9
 
 
 def main():
@@ -102,9 +109,12 @@ def main():
     index = SanctionsIndex.from_parquet(settings.sanctions_parquet)
     print(f"   {index.n_entities:,} entities / {index.n_variants:,} variants")
 
-    print("2) manufacturing training pairs ...")
-    X, y = build_training_pairs(index, seed=settings.random_seed)
-    print(f"   {len(y):,} pairs  ({int(y.sum()):,} positive / {int((y==0).sum()):,} negative)")
+    print("2) manufacturing training pairs (entity-disjoint from the test stream) ...")
+    from screensmart.synthesis import entity_split
+    train_ids, eval_ids = entity_split([e.id for e in index.entities])
+    X, y = build_training_pairs(index, seed=settings.random_seed, train_ids=train_ids)
+    print(f"   {len(y):,} pairs  ({int(y.sum()):,} positive / {int((y==0).sum()):,} negative)"
+          f"  | train entities={len(train_ids):,}, held-out eval entities={len(eval_ids):,}")
 
     tx = pd.read_parquet(settings.transactions_parquet)
     tx_tune, tx_test = train_test_split(
@@ -135,14 +145,16 @@ def main():
               f"over_block={metrics.over_block_rate:.3f}% review={metrics.review_rate:.2f}% "
               f"lat={metrics.mean_latency_ms:.2f}ms (tau {tau_low:.2f}/{tau_high:.2f})")
 
-    print("\n5) selecting winner (operating constraints: over-block <= 1%, "
-          "review <= 12%; then maximise flag-recall + F1) ...")
+    print("\n5) selecting winner (operating constraints: over-block <= 1%, review <= 12%; "
+          "then maximise flag-recall + F1) ...")
 
     # Domain-aware selection. A model is only viable if it doesn't over-block legit
     # customers (commercial killer) AND doesn't flood the analyst queue. Among viable
     # models, prefer the one that flags the most sanctioned payments (safety) and has
     # the best precision/recall balance. This rejects e.g. a 31%-review model that
     # would otherwise win on F1 alone.
+    # a model is viable if it doesn't over-block customers AND keeps the review queue
+    # bounded; among viable models, maximise flag-recall + F1.
     OVER_BLOCK_CAP, REVIEW_CAP = 1.0, 12.0
 
     def key(item):

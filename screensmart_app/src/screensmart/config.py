@@ -5,6 +5,8 @@ SCREENSMART_ (e.g. SCREENSMART_TAU_HIGH=0.95).
 """
 from __future__ import annotations
 import pathlib
+from typing import Optional
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +41,14 @@ class Settings(BaseSettings):
     sanctions_parquet: pathlib.Path = _ROOT / "data" / "processed" / "sanctions_clean.parquet"
     transactions_parquet: pathlib.Path = _ROOT / "data" / "processed" / "transactions.parquet"
     model_path: pathlib.Path = _BUNDLE / "models" / "precision_model.joblib"
+
+    # data source: "parquet" (offline snapshot) or "db" (live Postgres from sanctions_ingestion)
+    sanctions_source: str = "parquet"
+    # reads the unprefixed DATABASE_URL (shared with sanctions_ingestion / exposure_graph)
+    database_url: Optional[str] = Field(default=None, validation_alias="DATABASE_URL")
+    opensanctions_dataset: str = "sanctions"    # which opensanctions_target feed to load
+    use_crypto_exposure: bool = True            # consult exposure_index for crypto wallets (DB mode)
+    exposure_review_threshold: float = 0.08     # graph exposure score -> REVIEW
 
     # decision thresholds on the calibrated probability (overridden by the
     # values learned during training and stored in the model artifact)

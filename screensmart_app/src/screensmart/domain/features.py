@@ -29,6 +29,13 @@ class MatchFeatures(BaseModel):
     is_person: bool
     schema_compatible: bool      # payment-vs-entity type plausibility
     matched_is_primary: bool     # best variant was the primary name (vs an alias)
+    # Secondary-identity corroboration. These are COMPUTED for every pair and used by
+    # the screener's deterministic rules (exact-ID short-circuit, DOB-mismatch demotion)
+    # and in the explanation — but they are intentionally NOT model features: most
+    # payments carry no identity, so feeding mostly-zero columns to the classifier only
+    # diluted its name judgement and cost aggregate precision. Rules handle them better.
+    dob_match: float             # +1 exact DOB, +0.6 year-only, 0 unknown, -1 mismatch
+    id_match: float              # +1 a passport/national-id exactly matches the entity, else 0
 
     FEATURE_NAMES: ClassVar[tuple[str, ...]] = (
         "token_sort", "token_set", "wratio", "jaro_winkler",
@@ -38,7 +45,8 @@ class MatchFeatures(BaseModel):
     )
 
     def to_vector(self) -> list[float]:
-        """Serialise to the ordered float list the Stage-3 model consumes."""
+        """Serialise to the ordered float list the Stage-3 model consumes (name-based;
+        DOB/ID are applied as rules in the screener, not as model inputs)."""
         return [
             self.token_sort, self.token_set, self.wratio, self.jaro_winkler,
             self.phonetic_agreement, self.token_coverage_q, self.rare_token_overlap,

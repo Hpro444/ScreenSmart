@@ -16,12 +16,19 @@ class SanctionedEntity(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     countries: list[str] = Field(default_factory=list)
     programs: list[str] = Field(default_factory=list)
+    dob: Optional[str] = None                 # ISO birth date, possibly partial (e.g. 1990-03)
+    identifiers: list[str] = Field(default_factory=list)  # passport / national / tax IDs
     first_seen: Optional[str] = None
 
     @property
     def all_names(self) -> list[str]:
         """Primary name followed by all aliases, in list order."""
         return [self.name, *self.aliases]
+
+    @property
+    def birth_year(self) -> Optional[str]:
+        """Year component of the DOB, if any (handles partial dates)."""
+        return self.dob[:4] if self.dob and len(self.dob) >= 4 else None
 
 
 class NameVariant(BaseModel):

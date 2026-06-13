@@ -17,7 +17,7 @@ import pandas as pd
 
 from ..domain.models import SanctionedEntity, NameVariant
 from ..domain.enums import EntitySchema
-from ..normalization import norm, tokens, phon
+from ..normalization import norm, tokens, phon, norm_id
 
 
 def _split(field: str) -> list[str]:
@@ -41,9 +41,14 @@ class SanctionsIndex:
         self.exact: dict[str, str] = {}                       # variant_norm -> entity_id
         self.block: dict[str, list[int]] = collections.defaultdict(list)
         self.wallets: dict[str, str] = {}                     # addr.lower() -> entity_id
+        self.id_index: dict[str, str] = {}                    # norm_id -> entity_id
         df: collections.Counter = collections.Counter()       # token document frequency
 
         for e in entities:
+            for raw_id in e.identifiers:                      # exact-ID lookup (passport/national)
+                key = norm_id(raw_id)
+                if len(key) >= 5:                             # ignore tiny/ambiguous ids
+                    self.id_index.setdefault(key, e.id)
             names = [(e.name, True)] + [(a, False) for a in e.aliases]
             seen_tokens_for_entity: set[str] = set()
             for raw, is_primary in names:
@@ -83,10 +88,21 @@ class SanctionsIndex:
                 aliases=_split(r.aliases),
                 countries=_split(r.countries),
                 programs=_split(getattr(r, "sanctions", "")),
+                dob=(getattr(r, "birth_date", "") or None),
+                identifiers=_split(getattr(r, "identifiers", "")),
                 first_seen=getattr(r, "first_seen", None),
             )
             for r in df.itertuples()
         ]
+        return cls(entities)
+
+    @classmethod
+    def from_db(cls, engine, dataset: str = "sanctions") -> "SanctionsIndex":
+        """Build the index from the live Postgres tables (opensanctions_target +
+        crypto_wallet) instead of the parquet snapshot. Lazy-imports the DB layer so the
+        parquet path never requires sqlalchemy."""
+        from .. import db          # local import: keeps sqlalchemy optional
+        entities = db.load_entities(engine, dataset) + db.load_wallet_entities(engine)
         return cls(entities)
 
     # ---- lookups -------------------------------------------------------
@@ -106,6 +122,11 @@ class SanctionsIndex:
     def wallet_entity(self, address: str) -> str | None:
         """Case-insensitive wallet address lookup; returns entity_id or None."""
         return self.wallets.get((address or "").lower())
+
+    def id_entity(self, identifier: str) -> str | None:
+        """Exact passport/national-ID lookup; returns entity_id or None."""
+        key = norm_id(identifier)
+        return self.id_index.get(key) if len(key) >= 5 else None
 
     def recall(self, query_norm: str, max_candidates: int = 200) -> list[str]:
         """Return candidate entity_ids ranked by shared-token IDF mass.

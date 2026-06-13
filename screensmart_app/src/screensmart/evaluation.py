@@ -9,7 +9,23 @@ import pandas as pd
 
 from .screening.screener import SanctionsScreener
 from .domain.enums import VerdictType, Channel
-from .domain.models import ModelMetrics
+from .domain.models import ModelMetrics, PaymentInstruction
+
+
+def row_to_payment(row) -> PaymentInstruction:
+    """Build a PaymentInstruction from a transactions.parquet row (handles optional cols)."""
+    def g(k):
+        v = row[k] if k in row else None
+        return (v or None) if isinstance(v, str) else v
+    return PaymentInstruction(
+        txn_id=str(row["txn_id"]), channel=Channel(row["channel"]),
+        amount=g("amount"), currency=g("currency"), rail=g("rail"),
+        orig_country=g("orig_country"),
+        bene_name=row["bene_name"] if "bene_name" in row else "",
+        bene_country=row["bene_country"] if "bene_country" in row else "",
+        wallet=row["wallet"] if "wallet" in row else "",
+        bene_dob=g("bene_dob"), bene_passport=g("bene_passport"),
+        bene_national_id=g("bene_national_id"))
 
 # payments that should NOT be auto-blocked (legit) — used for over-block rate
 _CLEAN = {"clean", "fp_bait", "crypto_clean"}
@@ -19,11 +35,9 @@ _SANCTIONED = {"sanctioned_exact", "sanctioned_reorder", "sanctioned_translit",
 
 
 def screen_row(screener: SanctionsScreener, row) -> tuple[str, float, float]:
-    """Return (verdict, probability, latency_ms) for one transaction row."""
-    if row["channel"] == Channel.CRYPTO.value:
-        r = screener.screen_wallet(row["wallet"])
-    else:
-        r = screener.screen_name(row["bene_name"], row.get("bene_country", ""))
+    """Return (verdict, probability, latency_ms) for one transaction row — the full
+    pipeline (identity + risk) via screen()."""
+    r = screener.screen(row_to_payment(row))
     return r.verdict.value, r.probability, r.latency_ms
 
 

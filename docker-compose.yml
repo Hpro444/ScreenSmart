@@ -59,6 +59,38 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Event backbone for the streaming pipeline (ingest → screening services →
+  # accumulator → verdicts). Single-node KRaft (no Zookeeper). In-network clients use
+  # `kafka:9092`; host/dev tools use `localhost:29092`.
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: screensmart-kafka
+    ports:
+      - "29092:29092"          # host access (dev)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - screensmart_kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
   postgres:
     image: postgres:16
     container_name: ${POSTGRES_CONTAINER_NAME:-screensmart-postgres}
@@ -80,5 +112,86 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # ---- streaming pipeline: ingest → workers → accumulator → ws-gateway → frontend ----
+  ingest:
+    build: { context: ./streaming }
+    image: screensmart-streaming:latest
+    container_name: screensmart-ingest
+    command: ["uvicorn", "pipeline.ingest:app", "--host", "0.0.0.0", "--port", "8090"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    ports:
+      - "8090:8090"                 # POST /ingest, POST /ingest/replay
+    volumes:
+      - ./data:/app/data:ro         # replay reads the synthetic transactions parquet
+    depends_on:
+      kafka: { condition: service_healthy }
+    restart: unless-stopped
+
+  screensmart-worker:
+    build: { context: ./screensmart_app }
+    image: screensmart-api:latest    # same image as the API, different command
+    container_name: screensmart-worker
+    command: ["python", "-m", "screensmart.worker"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      kafka: { condition: service_healthy }
+    restart: unless-stopped
+
+  exposure-worker:
+    build: { context: ./exposure_graph }
+    image: exposure-graph:latest
+    container_name: exposure-worker
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
+  accumulator:
+    build: { context: ./streaming }
+    image: screensmart-streaming:latest
+    container_name: screensmart-accumulator
+    command: ["python", "-m", "pipeline.accumulator"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
+  ws-gateway:
+    build: { context: ./streaming }
+    image: screensmart-streaming:latest
+    container_name: screensmart-ws
+    command: ["uvicorn", "pipeline.ws_gateway:app", "--host", "0.0.0.0", "--port", "8091"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET:-dev-screensmart-secret-change-me}
+    ports:
+      - "8091:8091"                 # REST (/auth, /review, /stats) + WS (/ws/feed)
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
+  frontend:
+    build: { context: ./frontend }
+    image: screensmart-frontend:latest
+    container_name: screensmart-frontend
+    ports:
+      - "8080:80"                   # the dashboard → http://localhost:8080
+    depends_on:
+      - ws-gateway
+    restart: unless-stopped
+
 volumes:
   screensmart_pgdata:
+  screensmart_kafkadata:
