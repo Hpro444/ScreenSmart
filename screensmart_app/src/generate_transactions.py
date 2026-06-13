@@ -20,9 +20,9 @@ import pandas as pd
 from screensmart.synthesis import (
     add_typo, transliterate, reorder, CLEAN_FIRST, CLEAN_LAST, COMMON_BAIT as BAIT,
 )
+from screensmart.config import settings
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-PROC = ROOT / "data" / "processed"
+PROC = settings.processed_dir
 RNG = random.Random(42)
 
 COUNTRIES = ["us", "gb", "de", "fr", "ng", "in", "br", "jp", "ae", "sg", "za", "mx"]

@@ -16,14 +16,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from screensmart.config import settings
+
 sys.stdout.reconfigure(encoding="utf-8")
 sns.set_theme(style="whitegrid")
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-RAW = ROOT / "data" / "raw"
-VIS = ROOT / "reports" / "visuals"
-VIS.mkdir(parents=True, exist_ok=True)
-PROC = ROOT / "data" / "processed"
-PROC.mkdir(parents=True, exist_ok=True)
+RAW = settings.raw_dir
+VIS = settings.visuals_dir
+PROC = settings.processed_dir
+for _d in (VIS, PROC):
+    _d.mkdir(parents=True, exist_ok=True)
 
 
 def save(fig, name):

@@ -19,6 +19,7 @@ from .screening.screener import SanctionsScreener
 from .matching.scoring import build_features
 from .domain.enums import VerdictType, Channel, CountryMatch
 from .domain.models import ScreeningResult, SanctionedEntity, MatchFeatures
+from .logging_setup import configure as configure_logging, log_event
 
 # loaded once at startup (index build + model load is ~5s; never per-request)
 SCREENER: Optional[SanctionsScreener] = None
@@ -27,8 +28,12 @@ SCREENER: Optional[SanctionsScreener] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global SCREENER
+    configure_logging()
     SCREENER = SanctionsScreener.load(settings)
+    log_event("startup", model=SCREENER.model_name, entities=SCREENER.index.n_entities,
+              tau_low=SCREENER.tau_low, tau_high=SCREENER.tau_high)
     yield
+    log_event("shutdown")
     SCREENER = None
 
 
@@ -154,6 +159,12 @@ def _build_response(req: ScreenRequest, res: ScreeningResult,
 
     signals = _signals(feats, scr.index.entity_by_id[res.entity_id]) if (feats and res.entity_id) \
         else (res.reasons or ["no candidate matches surfaced"])
+
+    # structured audit trail — one JSON event per verdict
+    log_event("screen", txn_id=req.txn_id, channel=res.channel.value,
+              query=res.query, verdict=res.verdict.value, probability=round(p, 4),
+              entity_id=res.entity_id, matched_name=res.matched_name,
+              model=res.model_name, latency_ms=round(res.latency_ms, 3))
 
     return ScreenResponse(
         txn_id=req.txn_id, verdict=res.verdict, probability=round(p, 4),

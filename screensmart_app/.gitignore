@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Structured runtime logs (see screensmart/logging_setup.py)
+logs/
+
+# Trained model artifacts — regenerable via train_model.py
+models/

@@ -15,7 +15,9 @@ import json
 import pathlib
 import requests
 
-RAW = pathlib.Path(__file__).resolve().parent.parent / "data" / "raw"
+from screensmart.config import settings
+
+RAW = settings.raw_dir
 RAW.mkdir(parents=True, exist_ok=True)
 
 # (filename, url, note).  Order = roughly most -> least important.
