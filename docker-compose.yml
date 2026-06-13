@@ -11,16 +11,29 @@ services:
       dockerfile: Dockerfile
     image: screensmart-api:latest
     container_name: screensmart-api
+  postgres:
+    image: postgres:16
+    container_name: ${POSTGRES_CONTAINER_NAME:-screensmart-postgres}
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "8000:8000"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./data:/app/data:ro                 # sanctions_clean.parquet (+ transactions) — read-only
       - ./screensmart_app/logs:/app/logs    # persist the JSON-lines audit log on the host
     restart: unless-stopped
+      - screensmart_pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
       interval: 30s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
       timeout: 5s
       retries: 3
       start_period: 25s
@@ -28,3 +41,7 @@ services:
     #   docker compose up --scale screensmart-api=4   (behind a load balancer)
     # or run uvicorn with multiple workers by overriding the command:
     #   command: ["uvicorn","screensmart.api:app","--host","0.0.0.0","--port","8000","--workers","4"]
+      retries: 10
+
+volumes:
+  screensmart_pgdata:
