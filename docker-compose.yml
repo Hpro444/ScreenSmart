@@ -27,6 +27,7 @@ services:
     volumes:
       - ./data:/app/data:ro
       - ./screensmart_app/logs:/app/logs
+      - ./screensmart_app/models:/app/models:ro   # host-built model, mounted (not baked)
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,7 +73,10 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      # In combined broker+controller (KRaft) mode the controller listener's advertised
+      # address is derived from `listeners` unless given here; without a routable
+      # CONTROLLER entry it resolves to 0.0.0.0 and `kafka-storage format` aborts at boot.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093,EXTERNAL://localhost:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -137,6 +141,7 @@ services:
       KAFKA_BOOTSTRAP: kafka:9092
     volumes:
       - ./data:/app/data:ro
+      - ./screensmart_app/models:/app/models:ro   # host-built model, mounted (not baked)
     depends_on:
       kafka: { condition: service_healthy }
     restart: unless-stopped
