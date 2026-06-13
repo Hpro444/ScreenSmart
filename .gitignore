@@ -23,9 +23,19 @@ build/
 *.swp
 *~
 
-# Environment variables
+# Environment variables (keep the example template committed)
 .env
 .env.*
+!.env.example
+
+# Node / frontend build
+node_modules/
+frontend/dist/
+
+# Logs (structured audit logs + run logs are regenerated)
+*.log
+**/logs/
+*.jsonl
 
 # OS artefacts
 .DS_Store
