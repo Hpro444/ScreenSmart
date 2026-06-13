@@ -1,0 +1,11 @@
+{"ts": "2026-06-13T19:08:39.450+00:00", "level": "INFO", "event": "ingest", "source": "opensanctions_crypto", "status": "fail", "error": "404 Client Error: Not Found for url: https://data.opensanctions.org/datasets/latest/crypto/targets.simple.csv", "seconds": 0.4}
+{"ts": "2026-06-13T19:11:07.519+00:00", "level": "INFO", "event": "ingest", "source": "un_consolidated", "status": "ok", "rows": 1002, "bytes": 2171560, "seconds": 2.6}
+{"ts": "2026-06-13T19:11:26.355+00:00", "level": "INFO", "event": "ingest", "source": "ofac_sdn", "status": "ok", "rows": 19066, "bytes": 5569611, "seconds": 6.3}
+{"ts": "2026-06-13T19:11:31.524+00:00", "level": "INFO", "event": "ingest", "source": "ofac_sdn_alt", "status": "ok", "rows": 20283, "bytes": 1066379, "seconds": 3.2}
+{"ts": "2026-06-13T19:11:38.714+00:00", "level": "INFO", "event": "ingest", "source": "ofac_sdn_add", "status": "ok", "rows": 24830, "bytes": 1670068, "seconds": 5.1}
+{"ts": "2026-06-13T19:11:41.719+00:00", "level": "INFO", "event": "ingest", "source": "ofac_consolidated", "status": "ok", "rows": 0, "bytes": 0, "seconds": 1.0}
+{"ts": "2026-06-13T19:12:08.855+00:00", "level": "INFO", "event": "ingest", "source": "ofac_enhanced", "status": "ok", "rows": 0, "bytes": 107772385, "seconds": 25.1}
+{"ts": "2026-06-13T19:12:15.652+00:00", "level": "INFO", "event": "ingest", "source": "uk_ofsi", "status": "ok", "rows": 19761, "bytes": 16641139, "seconds": 4.8}
+{"ts": "2026-06-13T19:12:44.887+00:00", "level": "INFO", "event": "ingest", "source": "opensanctions_sanctions", "status": "ok", "rows": 73274, "bytes": 65728239, "seconds": 27.2}
+{"ts": "2026-06-13T19:14:43.311+00:00", "level": "INFO", "event": "ingest", "source": "ofac_enhanced", "status": "ok", "rows": 19861, "bytes": 107772385, "seconds": 18.4}
+{"ts": "2026-06-13T19:15:34.971+00:00", "level": "INFO", "event": "ingest", "source": "opensanctions_sanctions", "status": "ok", "rows": 73274, "bytes": 65728239, "seconds": 26.1}

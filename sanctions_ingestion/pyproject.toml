@@ -1,0 +1,27 @@
+[project]
+name = "screensmart-sanctions-ingestion"
+version = "0.1.0"
+description = "Daily fresh-data ingestion of public sanctions sources into Postgres for ScreenSmart"
+requires-python = ">=3.12"
+dependencies = [
+    "sqlalchemy>=2.0,<2.1",
+    "psycopg[binary]>=3.2,<3.3",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.14",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+    "lxml>=5",
+    "apscheduler>=3.10,<4",
+]
+
+[project.scripts]
+si-init-db   = "sanctions_ingest.cli:init_db_cmd"
+si-ingest    = "sanctions_ingest.cli:ingest_cmd"
+si-scheduler = "sanctions_ingest.cli:scheduler_cmd"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

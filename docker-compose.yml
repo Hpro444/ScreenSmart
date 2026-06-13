@@ -39,6 +39,26 @@ services:
       start_period: 25s
     restart: unless-stopped
 
+  sanctions-ingest:
+    build:
+      context: ./sanctions_ingestion
+      dockerfile: Dockerfile
+    image: sanctions-ingest:latest
+    container_name: sanctions-ingest
+    env_file:
+      - .env
+    environment:
+      # Reuse the compose Postgres; service name `postgres` is the in-network host.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SANCTIONS_INGEST_LOGS_DIR: /app/logs
+    volumes:
+      - ./data:/app/data                       # persist freshly downloaded raw files
+      - ./sanctions_ingestion/logs:/app/logs    # ingest audit logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: postgres:16
     container_name: ${POSTGRES_CONTAINER_NAME:-screensmart-postgres}
