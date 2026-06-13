@@ -1,0 +1,96 @@
+"""Manufacture labelled training pairs from the sanctions list itself.
+
+We have no labelled production data, so we synthesise it (the standard approach):
+  positives      : an entity vs its own aliases / degraded spellings  (label 1)
+  hard negatives : a name vs a DIFFERENT entity that recall surfaces   (label 0)
+                   -> the "two different Mohammeds / John Smith vs John L. Smith" trap
+  easy negatives : a random clean name vs whatever recall surfaces     (label 0)
+
+The features are computed with the exact same code path used at serve time
+(matching.build_features), so there is no train/serve skew.
+"""
+from __future__ import annotations
+import random
+import numpy as np
+
+from ..indexing.index import SanctionsIndex
+from ..matching.scoring import build_features
+from ..normalization import norm
+from ..synthesis import degrade, random_clean_name, COMMON_BAIT
+from ..domain.enums import EntitySchema
+
+_COUNTRY_POOL = ["us", "gb", "de", "fr", "ng", "in", "br", "jp", "ae", "sg", "za", "mx"]
+
+
+def _country_for_positive(entity, rng: random.Random) -> str:
+    # 70% of the time the payment country matches the entity (realistic), else unknown
+    if entity.countries and rng.random() < 0.70:
+        return entity.countries[0]
+    return ""
+
+
+def build_training_pairs(index: SanctionsIndex, *, seed: int = 42,
+                         max_entities: int = 15000,
+                         ) -> tuple[np.ndarray, np.ndarray]:
+    """Return (X feature matrix, y labels)."""
+    rng = random.Random(seed)
+    rows: list[list[float]] = []
+    labels: list[int] = []
+
+    # focus positives on the entity types a fiat name-payment actually targets
+    pool = [e for e in index.entities
+            if e.schema_ in (EntitySchema.PERSON, EntitySchema.ORGANIZATION,
+                             EntitySchema.LEGAL_ENTITY, EntitySchema.COMPANY)]
+    rng.shuffle(pool)
+    pool = pool[:max_entities]
+
+    for e in pool:
+        pos_country = _country_for_positive(e, rng)
+
+        # --- positive 1: an alias resolves to its own entity ---
+        if e.aliases:
+            alias = rng.choice(e.aliases)
+            feats, _, _ = build_features(alias, pos_country, e, index)
+            rows.append(feats.to_vector()); labels.append(1)
+
+        # --- positive 2: a degraded spelling of a name ---
+        base = rng.choice(e.all_names)
+        dname, _ = degrade(base, rng)
+        feats, _, _ = build_features(dname, pos_country, e, index)
+        rows.append(feats.to_vector()); labels.append(1)
+
+        # --- hard negative: same query, a DIFFERENT entity recall surfaces ---
+        neg_country = rng.choice(_COUNTRY_POOL)
+        for cid in index.recall(norm(dname), max_candidates=8):
+            if cid != e.id:
+                other = index.entity_by_id[cid]
+                feats, _, _ = build_features(dname, neg_country, other, index)
+                rows.append(feats.to_vector()); labels.append(0)
+                break
+
+    # --- FALSE-POSITIVE bait negatives: common names (Kim, Mohammed, John Smith)
+    #     vs every sanctioned entity they collide with on a COMMON token. These are
+    #     the over-blocking trap; labelling them 0 teaches the model that a high
+    #     fuzzy score with LOW rare-token overlap is not a real match. ---
+    bait_rounds = max(1, len(pool) // (len(COMMON_BAIT) * 8))
+    for _ in range(bait_rounds):
+        for nm in COMMON_BAIT:
+            for cid in index.recall(norm(nm), max_candidates=6):
+                other = index.entity_by_id[cid]
+                feats, _, _ = build_features(nm, rng.choice(_COUNTRY_POOL), other, index)
+                rows.append(feats.to_vector()); labels.append(0)
+
+    # --- easy negatives: random clean names vs whatever they collide with ---
+    n_easy = max(1, len(rows) // 4)
+    for _ in range(n_easy):
+        nm = random_clean_name(rng)
+        cands = index.recall(norm(nm), max_candidates=4)
+        if not cands:
+            continue
+        other = index.entity_by_id[rng.choice(cands)]
+        feats, _, _ = build_features(nm, rng.choice(_COUNTRY_POOL), other, index)
+        rows.append(feats.to_vector()); labels.append(0)
+
+    X = np.asarray(rows, dtype=float)
+    y = np.asarray(labels, dtype=int)
+    return X, y
