@@ -1,0 +1,28 @@
+# Exposure Graph MVP — Postgres only.
+# The Python pipeline steps are run as CLI commands (see README).
+#
+#   docker compose up -d          → start Postgres
+#   docker compose down -v        → stop and wipe data
+#
+services:
+  db:
+    image: postgres:16
+    container_name: exposure-graph-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-screensmart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-screensmart}
+      POSTGRES_DB: ${POSTGRES_DB:-screensmart}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - exposure_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-screensmart} -d ${POSTGRES_DB:-screensmart}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  exposure_pgdata:
