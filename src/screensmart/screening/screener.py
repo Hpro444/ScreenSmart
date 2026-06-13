@@ -80,13 +80,17 @@ class SanctionsScreener:
                 entity_id=eid, matched_name=matched, reasons=reasons,
                 model_name=self.model_name, latency_ms=(time.perf_counter() - t0) * 1000)
 
-        # S0 exact — auto-block only for multi-token names. A single-token exact hit
-        # (e.g. "Kim", "Mohammed") is too ambiguous to auto-block, so it falls through
-        # to the model, which weighs the token's absolute rarity ("Hizballah" != "Kim").
+        # S0 exact — auto-block only when the matched name is DISTINCTIVE (rare
+        # tokens). A common exact name ("Mohammed Ali", "Kim") is too ambiguous to
+        # auto-block and falls through to the model, which can route it to REVIEW.
         eid = self.index.exact_entity(q)
-        if eid and len(tokens(q)) >= 2:
-            return done(VerdictType.MATCH, 1.0, 100.0, eid,
-                        self.index.entity_by_id[eid].name, ["exact normalised name match"])
+        qt = tokens(q)
+        if eid and qt:
+            rarity = sum(self.index.idf_of(t) for t in qt) / len(qt) / self.index.default_idf
+            if rarity >= 0.6:
+                return done(VerdictType.MATCH, 1.0, 100.0, eid,
+                            self.index.entity_by_id[eid].name,
+                            ["exact match on a distinctive name"])
 
         # S1 recall
         cand_ids = self.index.recall(q, self.settings.max_candidates)

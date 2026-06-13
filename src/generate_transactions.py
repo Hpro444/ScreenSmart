@@ -53,11 +53,14 @@ def main(n: int = 20000):
             rows.append({**common, "channel": "fiat", "bene_name": nm,
                          "bene_country": RNG.choice(COUNTRIES), "wallet": "",
                          "expected_verdict": "NO_MATCH", "scenario": "clean"})
-        elif roll < 0.945:                    # ~4.5% false-positive bait (clean but looks risky)
+        elif roll < 0.945:                    # ~4.5% false-positive bait: a common name
+            # that PARTIALLY collides with sanctioned entries. With only a name+country
+            # these genuinely cannot be auto-cleared, so the correct verdict is REVIEW
+            # (a human checks DOB/ID). Auto-BLOCK here = over-block; NO_MATCH = unsafe.
             nm = RNG.choice(BAIT)
             rows.append({**common, "channel": "fiat", "bene_name": nm,
                          "bene_country": RNG.choice(COUNTRIES), "wallet": "",
-                         "expected_verdict": "NO_MATCH", "scenario": "fp_bait"})
+                         "expected_verdict": "REVIEW", "scenario": "fp_bait"})
         elif roll < 0.975:                    # ~3% true sanctioned, but DEGRADED
             src = persons if RNG.random() < 0.6 else orgs
             real = src.sample(1, random_state=RNG.randint(0, 1 << 30)).iloc[0]["name"]

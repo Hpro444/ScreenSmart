@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     random_seed: int = 42
     target_precision: float = 0.95   # block precision we tune thresholds to hit
     threshold_tune_frac: float = 0.5  # fraction of the live stream used to tune thresholds
+    review_budget: float = 0.08       # max fraction of traffic sent to MATCH+REVIEW
 
     def ensure_dirs(self) -> None:
         """Create all output directories; idempotent — safe to call on every run."""

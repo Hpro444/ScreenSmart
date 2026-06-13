@@ -23,10 +23,19 @@ _COUNTRY_POOL = ["us", "gb", "de", "fr", "ng", "in", "br", "jp", "ae", "sg", "za
 
 
 def _country_for_positive(entity, rng: random.Random) -> str:
-    # 70% of the time the payment country matches the entity (realistic), else unknown
-    if entity.countries and rng.random() < 0.70:
-        return entity.countries[0]
-    return ""
+    """Country for a POSITIVE pair, deliberately decorrelated from the label.
+
+    Real payments to a sanctioned party often route through a third country, so a
+    country mismatch must NOT veto a strong name match. We give positives matching,
+    mismatching and unknown countries in roughly equal measure so the model treats
+    country as a weak corroborator, not a hard gate.
+    """
+    r = rng.random()
+    if entity.countries and r < 0.45:
+        return entity.countries[0]          # match
+    if r < 0.85:
+        return rng.choice(_COUNTRY_POOL)     # usually a mismatch
+    return ""                                # unknown
 
 
 def build_training_pairs(index: SanctionsIndex, *, seed: int = 42,

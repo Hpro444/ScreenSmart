@@ -27,8 +27,10 @@ class ModelMetrics(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_name: str
-    block_precision: float
-    recall: float
+    block_precision: float       # of MATCH verdicts, fraction truly sanctioned
+    recall: float                # of true-MATCH payments, fraction auto-blocked
+    flag_recall: float           # of ALL sanctioned payments, fraction NOT released
+                                 #   (caught as MATCH or REVIEW) — the safety metric
     over_block_rate: float       # % of clean payments wrongly blocked
     review_rate: float           # % of all payments routed to a human
     tau_high: float

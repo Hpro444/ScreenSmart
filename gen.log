@@ -1,0 +1,23 @@
+Generated 20,000 transactions -> C:\Users\MatejaSubin\Documents\Hakathon\data\processed\transactions.parquet
+
+Scenario mix:
+scenario
+clean                  17952
+fp_bait                  922
+crypto_clean             385
+sanctioned_exact         178
+sanctioned_translit      164
+sanctioned_reorder       155
+sanctioned_typo          151
+crypto_sanctioned         93
+
+Channel mix:
+channel
+fiat      19522
+crypto      478
+
+Expected-verdict mix:
+expected_verdict
+NO_MATCH    18337
+REVIEW       1237
+MATCH         426

@@ -25,6 +25,10 @@ def main():
     print(f"model = {scr.model_name}  tau {scr.tau_low}/{scr.tau_high}\n")
 
     tx = pd.read_parquet(settings.transactions_parquet)
+    # keep all rare (sanctioned) scenarios, sample the common ones, for speed
+    rare = tx[~tx["scenario"].isin(["clean"])]
+    clean = tx[tx["scenario"] == "clean"].sample(1500, random_state=0)
+    tx = pd.concat([rare, clean]).reset_index(drop=True)
     rows = []
     for _, r in tx.iterrows():
         if r["channel"] == Channel.CRYPTO.value:

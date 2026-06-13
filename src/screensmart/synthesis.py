@@ -11,11 +11,20 @@ TRANSLIT = {"sergey": "sergei", "muhammad": "mohammed", "ahmad": "ahmed",
             "qadhafi": "gaddafi", "yusuf": "yousef", "abdallah": "abdullah",
             "ii": "y", "ov": "off"}
 
-# clean name pools used to manufacture easy negatives / clean payments
-CLEAN_FIRST = ["James", "Maria", "Wei", "Anna", "Carlos", "Priya", "John", "Yuki",
-               "Liam", "Sofia", "Omar", "Elena", "David", "Fatima", "Lucas", "Mei"]
-CLEAN_LAST = ["Johnson", "Garcia", "Nguyen", "Müller", "Rossi", "Kowalski", "Tanaka",
-              "Andersson", "Okafor", "Silva", "Khan", "Petrov", "Schmidt", "Costa"]
+# clean name pools used to manufacture easy negatives / clean payments. Kept large
+# and diverse so synthetic clean traffic mostly does NOT collide with the list — the
+# realistic case (a tiny, surname-overlapping pool makes the review rate look worse
+# than production, where the vast majority of payees match nothing at all).
+CLEAN_FIRST = ["James", "Mary", "Wei", "Emma", "Carlos", "Priya", "Olivia", "Yuki",
+               "Liam", "Sofia", "Lucas", "Elena", "David", "Grace", "Noah", "Mei",
+               "Ethan", "Chloe", "Daniel", "Hannah", "Ryan", "Laura", "Kevin", "Aisha",
+               "Thomas", "Julia", "Henry", "Nadia", "Oscar", "Lena", "Felix", "Tara",
+               "Diego", "Ingrid", "Marco", "Sara", "Victor", "Nina", "Paul", "Rebecca"]
+CLEAN_LAST = ["Johnson", "Whitfield", "Nguyen", "Mueller", "Rossi", "Lindqvist",
+              "Tanaka", "Andersson", "Okafor", "Brennan", "Holloway", "Schmidt",
+              "Costa", "Delgado", "Fairbanks", "Underwood", "Kingsley", "Bauer",
+              "Castellano", "Hartmann", "Larsson", "Beaumont", "Sinclair", "Vanderberg",
+              "Ashworth", "Montgomery", "Fitzgerald", "Pemberton", "Lockwood", "Hawkins"]
 
 # common-name FALSE-POSITIVE bait: legitimate names that PARTIALLY collide with
 # sanctioned entries on common tokens (Kim, Mohammed, Wagner ...). Shared by the

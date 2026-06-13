@@ -6,15 +6,22 @@ that train-time and serve-time tokenisation are guaranteed identical.
 from __future__ import annotations
 import re
 import jellyfish
+from unidecode import unidecode
 
-_TOKEN = re.compile(r"[a-zA-ZÀ-ɏ]+")
+_TOKEN = re.compile(r"[a-z]+")
 _STOP = {"the", "of", "and", "co", "ltd", "llc", "company", "limited",
          "group", "inc", "corp", "al", "el", "bin", "ibn"}
 
 
 def norm(s: str) -> str:
-    """Lower-case, keep word tokens only, collapse whitespace."""
-    return " ".join(_TOKEN.findall((s or "").lower()))
+    """Transliterate to ASCII, lower-case, keep word tokens, collapse whitespace.
+
+    The unidecode pass is critical: sanctioned names (and the payments naming them)
+    arrive in Cyrillic, Arabic, Chinese, etc. Transliterating BOTH sides to a common
+    ASCII form ('Олексій'->'oleksii') is what makes cross-script matching possible —
+    without it any native-script name normalises to empty and is silently released.
+    """
+    return " ".join(_TOKEN.findall(unidecode(s or "").lower()))
 
 
 def tokens(s: str) -> list[str]:

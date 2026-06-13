@@ -79,11 +79,19 @@ def build_features(query_name: str, query_country: str,
     phonetic_agreement = phon_hit / len(qphon) if qphon else 0.0
     token_coverage_q = len(qtok_set & ctok) / len(qtok_set) if qtok_set else 0.0
 
-    # IDF-weighted shared-token mass: matching a RARE token (Qadhafi) counts far
-    # more than a common one (Mohammed) — directly attacks false positives.
-    shared = qtok_set & ctok
+    # IDF-weighted shared-token mass, matched FUZZILY so a mistyped distinctive
+    # token still counts (khaddouur ~ khaddour). Matching a RARE token (Qadhafi)
+    # counts far more than a common one (Mohammed) — the core anti-false-positive
+    # signal, and it must survive transliteration/typos.
     q_idf = sum(index.idf_of(t) for t in qtok_set) or 1.0
-    rare_token_overlap = sum(index.idf_of(t) for t in shared) / q_idf
+    ctok_list = list(ctok)
+    matched_idf = 0.0
+    for qt in qtok_set:
+        sim = max((jellyfish.jaro_winkler_similarity(qt, ct) for ct in ctok_list),
+                  default=0.0)
+        if sim >= 0.85:
+            matched_idf += index.idf_of(qt) * sim
+    rare_token_overlap = matched_idf / q_idf
 
     n_q, n_c = len(qtok), len(ctok)
     len_ratio = (min(n_q, n_c) / max(n_q, n_c)) if max(n_q, n_c) else 0.0

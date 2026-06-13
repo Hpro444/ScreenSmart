@@ -33,40 +33,63 @@ from screensmart.model.dataset import build_training_pairs
 from screensmart.model.estimators import ALL_MODELS
 from screensmart.model.base import PrecisionModel
 from screensmart.screening.screener import SanctionsScreener
-from screensmart.evaluation import evaluate
+from screensmart.evaluation import evaluate, _SANCTIONED
 from screensmart.domain.enums import VerdictType, Channel
+
+SANCTIONED_RECALL = 0.93   # tau_low aims to catch this share of sanctioned into >= REVIEW
+REVIEW_BUDGET = 0.10       # ...but never send more than this share of traffic to a human
 
 
 def transaction_probs(screener: SanctionsScreener, tx: pd.DataFrame
                       ) -> tuple[np.ndarray, np.ndarray]:
-    """Best-candidate calibrated probability per transaction + 'is a true block' truth."""
-    probs, truth = [], []
+    """Per-transaction best-candidate prob + scenario-based 'is genuinely sanctioned'
+       truth (used to tune BOTH thresholds — blocking a sanctioned party is correct
+       whether we'd policy-label it MATCH or REVIEW)."""
+    probs, truth_sanc = [], []
     for _, row in tx.iterrows():
         if row["channel"] == Channel.CRYPTO.value:
             r = screener.screen_wallet(row["wallet"])
         else:
             r = screener.screen_name(row["bene_name"], row.get("bene_country", ""))
         probs.append(r.probability)
-        truth.append(1 if row["expected_verdict"] == VerdictType.MATCH.value else 0)
-    return np.asarray(probs), np.asarray(truth)
+        truth_sanc.append(1 if row["scenario"] in _SANCTIONED else 0)
+    return np.asarray(probs), np.asarray(truth_sanc)
 
 
-def choose_thresholds(probs: np.ndarray, truth: np.ndarray, target_precision: float,
-                      ) -> tuple[float, float]:
-    """tau_high: lowest cut giving precision>=target (=> max recall);
-       tau_low : highest cut still catching >=98% of true blocks into REVIEW."""
-    prec, rec, thr = precision_recall_curve(truth, probs)
-    prec, rec = prec[:-1], rec[:-1]          # align with thr
+def choose_thresholds(probs: np.ndarray, truth_sanc: np.ndarray,
+                      target_precision: float) -> tuple[float, float]:
+    """Pick decision thresholds on the LIVE-distribution tune split.
+
+    tau_high (auto-block): lowest cut where block precision (sanctioned vs clean)
+       reaches target (=> max recall). If unreachable, the cut maximising F0.5
+       (precision-weighted) — a sensible high-precision point, never the degenerate 1.0.
+    tau_low (review): aims to catch SANCTIONED_RECALL of sanctioned payments into
+       >= REVIEW (safety), capped by a REVIEW_BUDGET on analyst load — the MORE
+       SELECTIVE of the two. If discrimination is good both are met; otherwise the
+       budget binds and we report the (lower) flag-recall honestly.
+    """
+    prec, rec, thr = precision_recall_curve(truth_sanc, probs)
+    prec, rec = prec[:-1], rec[:-1]
     if len(thr) == 0:
         return 0.9, 0.5
-
     ok = np.where(prec >= target_precision)[0]
-    tau_high = float(thr[ok[np.argmax(rec[ok])]]) if len(ok) else float(thr[np.argmax(prec)])
+    if len(ok):
+        tau_high = float(thr[ok[np.argmax(rec[ok])]])
+    else:
+        beta2 = 0.5 ** 2
+        f_beta = (1 + beta2) * prec * rec / (beta2 * prec + rec + 1e-9)
+        tau_high = float(thr[np.argmax(f_beta)])
 
-    hi_rec = np.where(rec >= 0.98)[0]
-    tau_low = float(thr[hi_rec[np.argmax(thr[hi_rec])]]) if len(hi_rec) else tau_high * 0.5
+    # safety target: lowest cut catching SANCTIONED_RECALL of sanctioned payments
+    sp, sr, sthr = precision_recall_curve(truth_sanc, probs)
+    sr = sr[:-1]
+    hi = np.where(sr >= SANCTIONED_RECALL)[0]
+    tau_low_safety = float(sthr[hi[np.argmax(sthr[hi])]]) if len(hi) else 0.0
+    # queue budget: don't send more than REVIEW_BUDGET of traffic to a human
+    tau_low_budget = float(np.quantile(probs, 1.0 - REVIEW_BUDGET))
+    tau_low = max(tau_low_safety, tau_low_budget)   # more selective of the two
     tau_low = min(tau_low, tau_high)
-    if tau_low >= tau_high:                  # keep a real REVIEW band
+    if tau_low >= tau_high:
         tau_low = tau_high * 0.5
     return round(tau_high, 4), round(tau_low, 4)
 
@@ -99,8 +122,8 @@ def main():
 
         # tune thresholds on the live-distribution tune split
         probe = SanctionsScreener(index, m.as_loaded(tau_high=2.0, tau_low=2.0), settings)
-        p_tune, t_tune = transaction_probs(probe, tx_tune)
-        tau_high, tau_low = choose_thresholds(p_tune, t_tune, settings.target_precision)
+        p_tune, ts_tune = transaction_probs(probe, tx_tune)
+        tau_high, tau_low = choose_thresholds(p_tune, ts_tune, settings.target_precision)
 
         # evaluate on the disjoint test split
         screener = SanctionsScreener(index, m.as_loaded(tau_high=tau_high, tau_low=tau_low), settings)
@@ -108,19 +131,26 @@ def main():
         metrics = metrics.model_copy(update={"train_seconds": round(train_s, 2)})
         results.append((m, metrics, tau_high, tau_low))
         print(f"   {m.name:<12} precision={metrics.block_precision:.3f} "
-              f"recall={metrics.recall:.3f} over_block={metrics.over_block_rate:.3f}% "
-              f"review={metrics.review_rate:.2f}% lat={metrics.mean_latency_ms:.2f}ms "
-              f"(tau {tau_low:.2f}/{tau_high:.2f}, train {train_s:.1f}s)")
+              f"recall={metrics.recall:.3f} flag_recall={metrics.flag_recall:.3f} "
+              f"over_block={metrics.over_block_rate:.3f}% review={metrics.review_rate:.2f}% "
+              f"lat={metrics.mean_latency_ms:.2f}ms (tau {tau_low:.2f}/{tau_high:.2f})")
 
-    print("\n5) selecting winner (max recall s.t. precision >= "
-          f"{settings.target_precision}) ...")
+    print("\n5) selecting winner (operating constraints: over-block <= 1%, "
+          "review <= 12%; then maximise flag-recall + F1) ...")
+
+    # Domain-aware selection. A model is only viable if it doesn't over-block legit
+    # customers (commercial killer) AND doesn't flood the analyst queue. Among viable
+    # models, prefer the one that flags the most sanctioned payments (safety) and has
+    # the best precision/recall balance. This rejects e.g. a 31%-review model that
+    # would otherwise win on F1 alone.
+    OVER_BLOCK_CAP, REVIEW_CAP = 1.0, 12.0
 
     def key(item):
         _m, mt, _th, _tl = item
-        meets = mt.block_precision >= settings.target_precision
+        viable = mt.over_block_rate <= OVER_BLOCK_CAP and mt.review_rate <= REVIEW_CAP
         f1 = (2 * mt.block_precision * mt.recall / (mt.block_precision + mt.recall)
               if (mt.block_precision + mt.recall) else 0.0)
-        return (1 if meets else 0, mt.recall if meets else f1, f1)
+        return (1 if viable else 0, mt.flag_recall + f1)
 
     winner = max(results, key=key)
     wm, wmetrics, wth, wtl = winner
