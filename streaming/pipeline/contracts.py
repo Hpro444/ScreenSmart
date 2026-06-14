@@ -33,6 +33,7 @@ class TxnEvent(BaseModel):
     bene_name: str = ""
     bene_country: str = ""
     wallet: str = ""
+    bene_account: Optional[str] = None    # graph node key (IBAN/account) → crypto-exposure trace
     bene_dob: Optional[str] = None
     bene_passport: Optional[str] = None
     bene_national_id: Optional[str] = None

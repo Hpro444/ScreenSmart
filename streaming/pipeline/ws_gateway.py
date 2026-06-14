@@ -119,10 +119,15 @@ def stats():
             "blocked": counts.get("blocked", 0)}
 
 
+_STATUSES = {"allowed", "review", "blocked"}
+
+
 @app.get("/review")
-def review_queue(_: str = Depends(require_auth), limit: int = 200):
-    """The analyst queue: every REVIEW dossier with sender/recipient/identifiers + reasons."""
-    return db.list_by_status(ENGINE, "review", limit)
+def review_queue(_: str = Depends(require_auth), status: str = "review", limit: int = 200):
+    """Dossiers for a given status (review | allowed | blocked) — sender/recipient/
+    identifiers + reasons + module results. Defaults to the REVIEW queue."""
+    status = status if status in _STATUSES else "review"
+    return db.list_by_status(ENGINE, status, min(max(limit, 1), 500))
 
 
 @app.get("/txn/{txn_id}")

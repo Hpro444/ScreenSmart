@@ -35,13 +35,14 @@ export async function getStats() {
   } catch { return { allowed: 0, review: 0, blocked: 0 } }
 }
 
-export async function getReview(limit = 200) {
+export async function getReview(status = 'review', limit = 200) {
+  const path = `${API}/review?status=${encodeURIComponent(status)}&limit=${limit}`
   let token = await ensureToken()
-  let r = await fetch(`${API}/review?limit=${limit}`, { headers: { Authorization: `Bearer ${token}` } })
+  let r = await fetch(path, { headers: { Authorization: `Bearer ${token}` } })
   if (r.status === 401) {                       // token expired → re-auth once
     token = await ensureToken(true)
-    r = await fetch(`${API}/review?limit=${limit}`, { headers: { Authorization: `Bearer ${token}` } })
+    r = await fetch(path, { headers: { Authorization: `Bearer ${token}` } })
   }
-  if (!r.ok) throw new Error('review unavailable')
+  if (!r.ok) throw new Error('queue unavailable')
   return r.json()
 }

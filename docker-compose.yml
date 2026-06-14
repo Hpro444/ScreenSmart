@@ -142,12 +142,17 @@ services:
     command: ["python", "-m", "pipeline.generator"]
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       GEN_RATE: "8"
       GEN_JITTER: "0.5"
+      GEN_ACCOUNT_RATE: "0.22"          # ~22% of payments trace a real exposure-graph account
+      GEN_MIN_HOPS: "1"                 # sample exposure paths from 1 hop ...
+      GEN_MAX_HOPS: "2"                 # ... up to 2 hops (weighted toward deeper graphs)
     volumes:
       - ./data:/app/data:ro
     depends_on:
       kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
     restart: unless-stopped
 
   screensmart-worker:

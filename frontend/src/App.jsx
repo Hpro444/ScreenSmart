@@ -112,37 +112,48 @@ function LiveBadge({ connected }) {
   )
 }
 
-function Kpi({ n, label, cls }) {
+function Kpi({ n, label, cls, active, onClick }) {
   return (
-    <div className={'kpi ' + cls}>
+    <button className={'kpi ' + cls + (active ? ' active' : '')} onClick={onClick} type="button">
       <div className="kpi-n">{Number(n).toLocaleString()}</div>
       <div className="kpi-l">{label}</div>
-    </div>
+    </button>
   )
 }
+
+const TABS = {
+  review: { title: 'In review', sev: 'rev', label: 'REVIEW', empty: 'Queue is clear — nothing awaiting review.' },
+  allowed: { title: 'Cleared', sev: 'ok', label: 'CLEARED', empty: 'No cleared payments yet.' },
+  blocked: { title: 'Blocked', sev: 'blk', label: 'BLOCKED', empty: 'No blocked payments yet.' },
+}
+const hasGraph = (d) => !!(d?.exposure_result?.detail?.graph?.nodes?.length)
 
 /* ----------------------------- review desk ----------------------------- */
 function Review({ onBack }) {
   const { counts, connected } = useMeta()
+  const [tab, setTab] = useState('review')
   const [items, setItems] = useState([])
   const [sel, setSel] = useState(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
+  const [graphOnly, setGraphOnly] = useState(false)
   const debounce = useRef(null)
 
-  const load = useCallback(() => {
-    getReview()
+  const load = useCallback((status) => {
+    setLoading(true)
+    getReview(status)
       .then((d) => { setItems(d); setErr('') })
-      .catch(() => setErr('Could not reach the review queue.'))
+      .catch(() => setErr('Could not reach the queue.'))
       .finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { setSel(null); load(tab) }, [tab, load])
 
+  // keep the active list fresh as matching verdicts stream in (debounced)
   useEffect(() => feed.onVerdict((v) => {
-    if (v.status === 'review') { clearTimeout(debounce.current); debounce.current = setTimeout(load, 900) }
-  }), [load])
+    if (v.status === tab) { clearTimeout(debounce.current); debounce.current = setTimeout(() => load(tab), 1000) }
+  }), [tab, load])
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onBack() }
@@ -150,25 +161,30 @@ function Review({ onBack }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [onBack])
 
-  // drop selection if it falls out of the queue
   useEffect(() => {
     if (sel && !items.some((i) => i.txn_id === sel.txn_id)) setSel(null)
   }, [items, sel])
 
   const needle = q.trim().toLowerCase()
-  const filtered = needle
-    ? items.filter((d) => {
-        const t = d.txn || {}
-        return `${t.bene_name || ''} ${t.wallet || ''} ${t.bene_country || ''} ${d.txn_id || ''}`
-          .toLowerCase().includes(needle)
-      })
-    : items
+  const filtered = items.filter((d) => {
+    if (graphOnly && !hasGraph(d)) return false
+    if (!needle) return true
+    const t = d.txn || {}
+    const reasons = [
+      ...(d.reasons || []),
+      ...((d.name_result && d.name_result.reasons) || []),
+      ...((d.exposure_result && d.exposure_result.reasons) || []),
+    ].join(' ')
+    return `${t.bene_name || ''} ${t.wallet || ''} ${t.bene_country || ''} ${d.txn_id || ''} ${d.combined_verdict || ''} ${reasons}`
+      .toLowerCase().includes(needle)
+  })
 
   const resolve = (txnId) => {
     setItems((xs) => xs.filter((i) => i.txn_id !== txnId))
     setSel((s) => (s && s.txn_id === txnId ? null : s))
   }
 
+  const meta = TABS[tab]
   return (
     <main className="review">
       <div className="review-bg"><Background intensity={0.5} ambient={0} onPick={setSel} /></div>
@@ -178,12 +194,12 @@ function Review({ onBack }) {
         <button className="back" onClick={onBack} title="Back to live view (Esc)">←</button>
         <div className="rev-head-title">
           <div className="rev-title"><span className="mark">◈</span> Review Desk</div>
-          <div className="rev-sub">Flagged payments awaiting an analyst decision</div>
+          <div className="rev-sub">Click a metric to browse cleared · review · blocked</div>
         </div>
         <div className="rev-kpis">
-          <Kpi n={counts.allowed} label="cleared" cls="ok" />
-          <Kpi n={counts.review} label="in review" cls="rev" />
-          <Kpi n={counts.blocked} label="blocked" cls="blk" />
+          <Kpi n={counts.allowed} label="cleared" cls="ok" active={tab === 'allowed'} onClick={() => setTab('allowed')} />
+          <Kpi n={counts.review} label="in review" cls="rev" active={tab === 'review'} onClick={() => setTab('review')} />
+          <Kpi n={counts.blocked} label="blocked" cls="blk" active={tab === 'blocked'} onClick={() => setTab('blocked')} />
           <LiveBadge connected={connected} />
         </div>
       </header>
@@ -191,47 +207,57 @@ function Review({ onBack }) {
       <div className="rev-body">
         <aside className="queue">
           <div className="queue-top">
-            <div className="queue-title">Queue <span className="badge">{filtered.length}</span></div>
+            <div className="queue-title">
+              <span className={'qtitle-dot ' + meta.sev} />{meta.title}
+              <span className="badge">{filtered.length}</span>
+            </div>
             <div className="search">
               <SearchIcon />
               <input value={q} onChange={(e) => setQ(e.target.value)}
-                     placeholder="Search name, country, ID…" />
+                     placeholder="Search name, country, reason…" />
+              {q && <button className="search-clear" onClick={() => setQ('')} aria-label="Clear search">✕</button>}
             </div>
+            <button className={'gfilter' + (graphOnly ? ' on' : '')} onClick={() => setGraphOnly((v) => !v)} type="button">
+              <span className="gfilter-mark">⬡</span> Exposure graph only
+            </button>
           </div>
           <div className="queue-list">
             {loading && <SkeletonRows />}
             {err && <div className="err pad">{err}</div>}
             {!loading && !err && filtered.length === 0 &&
-              <div className="muted pad">{items.length ? 'No matches.' : 'Queue is clear — nothing awaiting review.'}</div>}
+              <div className="muted pad">{items.length ? 'No matches for this filter.' : meta.empty}</div>}
             {filtered.map((d) => (
-              <QueueItem key={d.txn_id} d={d} active={sel?.txn_id === d.txn_id} onClick={() => setSel(d)} />
+              <QueueItem key={d.txn_id} d={d} tab={tab} active={sel?.txn_id === d.txn_id} onClick={() => setSel(d)} />
             ))}
           </div>
         </aside>
 
         <section className="detail">
-          {sel ? <Dossier d={sel} onResolve={resolve} /> : <EmptyDetail />}
+          {sel ? <Dossier d={sel} onResolve={tab === 'review' ? resolve : undefined} /> : <EmptyDetail />}
         </section>
       </div>
     </main>
   )
 }
 
-function QueueItem({ d, active, onClick }) {
+function QueueItem({ d, tab, active, onClick }) {
   const t = d.txn || {}
   const crypto = !!t.wallet && !t.bene_name
   const name = t.bene_name || (t.wallet ? shortWallet(t.wallet) : d.txn_id)
   const cc = (t.bene_country || '').toUpperCase()
+  const st = d.status || tab || 'review'
+  const sev = st === 'allowed' ? 'ok' : st === 'blocked' ? 'blk' : 'rev'
+  const label = st === 'allowed' ? 'CLEARED' : st === 'blocked' ? 'BLOCKED' : 'REVIEW'
   return (
     <button className={'qitem' + (active ? ' active' : '')} onClick={onClick}>
       <span className="avatar" style={{ '--h': hue(name) }}>{crypto ? '◈' : initials(name)}</span>
       <span className="qtext">
-        <span className="qname">{name}</span>
+        <span className="qname">{name}{hasGraph(d) && <span className="qgraph" title="has exposure graph">⬡</span>}</span>
         <span className="qmeta">{[flag(cc), cc, t.channel || 'fiat'].filter(Boolean).join(' · ')}</span>
       </span>
       <span className="qside">
         {t.amount != null && <span className="qamt">{fmtAmount(t.amount, t.currency)}</span>}
-        <span className="qsev rev">REVIEW</span>
+        <span className={'qsev ' + sev}>{label}</span>
       </span>
     </button>
   )
@@ -344,7 +370,9 @@ function ModuleCard({ title, icon, r }) {
   if (!r || !r.applicable) {
     return <div className="card na"><span className="card-h">{icon} {title}</span><span className="na-tag">not applicable</span></div>
   }
-  const pct = Math.round(Math.max(0, Math.min(1, Number(r.score) || 0)) * 100)
+  // for exposure, the decision is driven by risk_score; raw graph exposure_score is lower
+  const strength = r.detail?.risk_score != null ? Number(r.detail.risk_score) : Number(r.score)
+  const pct = Math.round(Math.max(0, Math.min(1, strength || 0)) * 100)
   return (
     <div className="card">
       <div className="card-h between">
@@ -361,6 +389,106 @@ function ModuleCard({ title, icon, r }) {
         </div>
       </div>
       {r.reasons?.length > 0 && <ul className="reasons sm">{r.reasons.map((x, i) => <li key={i}>{x}</li>)}</ul>}
+      {r.detail?.graph?.nodes?.length > 0 && <ExposureGraph graph={r.detail.graph} />}
+      {r.detail?.chain?.length > 1 && <ExposureChain steps={r.detail.chain} />}
+      {r.detail?.evidence?.length > 0 && <ExposureEvidence items={r.detail.evidence} />}
+    </div>
+  )
+}
+
+function ExposureChain({ steps }) {
+  if (!steps?.length) return null
+  return (
+    <div className="xchain">
+      <div className="xsec-h">Full route — how the chain was traced</div>
+      <ol className="xchain-list">
+        {steps.map((s) => (
+          <li key={s.step} className={'xchain-step ' + riskCls(s.risk)}>
+            <span className="xchain-bullet" />
+            <span className="xchain-body">
+              <span className="xchain-node">
+                {clip(s.label, 30)}
+                <span className="xchain-tags">
+                  {[s.type, s.risk !== 'NONE' ? s.risk : null, s.country ? s.country.toUpperCase() : null]
+                    .filter(Boolean).join(' · ')}
+                </span>
+              </span>
+              <span className="xchain-via">{s.via}{s.amount ? ` · ${fmtAmount(s.amount)}` : ''}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+function ExposureEvidence({ items }) {
+  if (!items?.length) return null
+  return (
+    <div className="xev-list">
+      <div className="xsec-h">Why it scored — evidence</div>
+      {items.map((e, i) => (
+        <div className="xev" key={i}>
+          <div className="xev-top">
+            <span className="xev-code">{String(e.reason_code || '').replace(/_/g, ' ')}</span>
+            {e.severity && <span className={'xev-sev ' + sevCls(e.severity)}>{e.severity}</span>}
+            {e.score_contribution != null && <span className="xev-score">{fmtContrib(e.score_contribution)}</span>}
+          </div>
+          {e.explanation && <div className="xev-exp">{e.explanation}</div>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ExposureGraph({ graph }) {
+  const nodes = graph?.nodes || []
+  const edges = graph?.edges || []
+  if (!nodes.length) return null
+  const R = 17, GAP = 150, PADX = 36, CY = 56, H = 132
+  const W = PADX * 2 + Math.max(1, nodes.length - 1) * GAP
+  const xs = nodes.map((_, i) => PADX + i * GAP)
+  return (
+    <div className="xgraph">
+      <div className="xgraph-scroll">
+        <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="xgraph-svg">
+          <defs>
+            <marker id="xg-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto">
+              <path d="M0,0 L6.5,3 L0,6 Z" fill="rgba(255,255,255,0.55)" />
+            </marker>
+          </defs>
+          {edges.map((e, i) => {
+            const x1 = xs[i], x2 = xs[i + 1], y = CY, mx = (x1 + x2) / 2
+            const inbound = String(e.flow || '').includes('inbound')
+            return (
+              <g key={i}>
+                <line x1={x1 + R} y1={y} x2={x2 - R} y2={y} stroke="rgba(255,255,255,0.16)" strokeWidth="1.5" />
+                <line x1={inbound ? x2 - R : x1 + R} y1={y} x2={inbound ? x1 + R : x2 - R} y2={y}
+                      stroke="transparent" markerEnd="url(#xg-arrow)" />
+                <text x={mx} y={y - 11} className="xg-edge">{(e.type || '').replace(/_/g, ' ')}</text>
+                {e.amount ? <text x={mx} y={y + 17} className="xg-amt">{fmtAmount(e.amount)}</text> : null}
+              </g>
+            )
+          })}
+          {nodes.map((n, i) => (
+            <g key={n.id + i} transform={`translate(${xs[i]},${CY})`}>
+              <circle r={R} className={'xg-node ' + riskCls(n.risk)
+                + (n.role === 'account' ? ' acct' : '') + (n.role === 'source' ? ' src' : '')} />
+              <text className="xg-glyph" y="4.5">{glyph(n.type)}</text>
+              <text className="xg-label" y={R + 16}>{clip(n.label, 16)}</text>
+              <text className="xg-sub" y={R + 29}>
+                {n.role === 'source' ? 'RISK SOURCE' : n.role === 'account' ? 'PAYEE' : (n.type || '')}
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
+      <div className="xgraph-legend">
+        <span><i className="xg-dot sanc" /> sanctioned</span>
+        <span><i className="xg-dot susp" /> suspicious</span>
+        <span><i className="xg-dot none" /> clean</span>
+        <span className="xg-meta">{graph.depth} hop{graph.depth === 1 ? '' : 's'} to source · exposure {Math.round((graph.score || 0) * 100)}%</span>
+      </div>
     </div>
   )
 }
@@ -436,4 +564,26 @@ function flag(cc) {
   const c = (cc || '').toUpperCase()
   if (!/^[A-Z]{2}$/.test(c)) return ''
   return String.fromCodePoint(...[...c].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65))
+}
+
+function riskCls(r) {
+  const x = (r || '').toUpperCase()
+  return x === 'SANCTIONED' ? 'sanc' : x === 'SUSPICIOUS' ? 'susp' : 'none'
+}
+function glyph(type) {
+  const t = (type || '').toUpperCase()
+  return { IBAN: '€', ACCOUNT: '€', PERSON: 'P', COMPANY: 'Co', BANK: 'B', WALLET: '◈' }[t] || '•'
+}
+function clip(s, n) {
+  s = String(s || '')
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
+}
+function sevCls(sev) {
+  const x = (sev || '').toUpperCase()
+  return x === 'CRITICAL' || x === 'HIGH' ? 'blk' : x === 'MEDIUM' ? 'rev' : 'ok'
+}
+function fmtContrib(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return ''
+  return (n >= 0 ? '+' : '') + n.toFixed(2)
 }
