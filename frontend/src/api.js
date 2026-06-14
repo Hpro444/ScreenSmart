@@ -1,6 +1,25 @@
 // API + WebSocket endpoints (override at build time with VITE_API_URL / VITE_WS_URL).
 export const API = import.meta.env.VITE_API_URL || 'http://localhost:8091'
 export const WS = import.meta.env.VITE_WS_URL || 'ws://localhost:8091/ws/feed'
+// local-LLM chatbot (explains why a payment was flagged)
+export const CHAT = import.meta.env.VITE_CHAT_URL || 'http://localhost:8092'
+
+// Stream the assistant's answer token-by-token. `messages` is the chat history
+// [{role:'user'|'assistant', content}]; an empty history asks for the initial explanation.
+export async function streamChat(dossier, messages, onToken, signal) {
+  const r = await fetch(`${CHAT}/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dossier, messages }), signal,
+  })
+  if (!r.ok || !r.body) throw new Error('chat unavailable')
+  const reader = r.body.getReader()
+  const dec = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    onToken(dec.decode(value, { stream: true }))
+  }
+}
 
 // The review desk needs a bearer token, but we don't want a login screen. We silently
 // authenticate with the demo analyst account and cache the token. Creds are overridable

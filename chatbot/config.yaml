@@ -1,0 +1,12 @@
+# ScreenSmart chatbot — local LLM via Ollama.
+# Every value can be overridden by an environment variable (shown in [brackets]).
+ollama:
+  base_url: http://ollama:11434         # [OLLAMA_BASE_URL] bundled Ollama service (compose)
+  model: llama3.2                        # [OLLAMA_MODEL]    local model tag
+  temperature: 0.2                       # [OLLAMA_TEMPERATURE]
+  num_ctx: 8192                          # [OLLAMA_NUM_CTX] context window
+  request_timeout: 120                   # [OLLAMA_TIMEOUT] seconds
+
+server:
+  host: 0.0.0.0
+  port: 8092                             # [CHATBOT_PORT]

@@ -210,6 +210,59 @@ services:
       postgres: { condition: service_healthy }
     restart: unless-stopped
 
+  # Local LLM runtime (GPU). Requires the NVIDIA Container Toolkit on the host.
+  # Models persist in the named volume.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: screensmart-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    gpus: all                       # expose all NVIDIA GPUs (Docker Compose v2.30+)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # one-shot: pull the model into the shared volume on first bring-up
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: screensmart-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c", "ollama pull ${OLLAMA_MODEL:-llama3.2} && echo 'model ready'"]
+    restart: "no"
+
+  # Local-LLM assistant: explains to the analyst why a payment was flagged. Uses LangGraph
+  # over the bundled Ollama service. Override host/model via .env.
+  chatbot:
+    build: { context: ./chatbot }
+    image: screensmart-chatbot:latest
+    container_name: screensmart-chatbot
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+    ports:
+      - "8092:8092"                 # POST /chat (streamed) · GET /health
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
   frontend:
     build: { context: ./frontend }
     image: screensmart-frontend:latest
@@ -218,8 +271,10 @@ services:
       - "8080:80"                   # the dashboard → http://localhost:8080
     depends_on:
       - ws-gateway
+      - chatbot
     restart: unless-stopped
 
 volumes:
   screensmart_pgdata:
   screensmart_kafkadata:
+  ollama_models:

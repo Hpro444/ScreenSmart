@@ -1,5 +1,0 @@
-# Crypto exposure graph MVP - minimal dependency set
-# Install with: pip install -r requirements.txt
-sqlalchemy>=2.0,<2.1
-psycopg[binary]>=3.2,<3.3
-python-dotenv>=1.0
