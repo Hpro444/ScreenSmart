@@ -65,15 +65,24 @@ export default function Background({ intensity = 1, ambient = 0, onPick }) {
     let mouseX = -1, mouseY = -1, hover = null
 
     function resize() {
-      W = canvas.clientWidth
-      H = canvas.clientHeight
+      const w = canvas.clientWidth
+      const h = canvas.clientHeight
+      if (!w || !h) return                          // ignore transient zero/partial layout
+      if (w === W && h === H) return                // no real change → don't wipe the field
+      W = w; H = h
       canvas.width = Math.floor(W * dpr)
       canvas.height = Math.floor(H * dpr)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.fillStyle = `rgb(${BG[0]},${BG[1]},${BG[2]})`
       ctx.fillRect(0, 0, W, H)
     }
+    // ResizeObserver re-measures whenever the canvas box actually settles — so a measurement
+    // taken mid-transition (which sized the backing store wrong → blurry/oversized dots) is
+    // corrected the moment layout is final.
+    const ro = new ResizeObserver(() => resize())
+    ro.observe(canvas)
     resize()
+    requestAnimationFrame(resize)                   // re-measure after the transition's first frame
     window.addEventListener('resize', resize)
 
     function spawn(input) {
@@ -225,6 +234,7 @@ export default function Background({ intensity = 1, ambient = 0, onPick }) {
 
     return () => {
       cancelAnimationFrame(raf)
+      ro.disconnect()
       window.removeEventListener('resize', resize)
       canvas.removeEventListener('mousemove', onMove)
       canvas.removeEventListener('mouseleave', onLeave)
