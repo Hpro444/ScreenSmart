@@ -132,6 +132,24 @@ services:
       kafka: { condition: service_healthy }
     restart: unless-stopped
 
+  # Always-on traffic source: continuously feeds fresh, realistically-labelled payments
+  # into screening.txns so the live feed / dashboard animation always reflects genuine
+  # screening activity (not a finite replay). Tune throughput with GEN_RATE.
+  generator:
+    build: { context: ./streaming }
+    image: screensmart-streaming:latest
+    container_name: screensmart-generator
+    command: ["python", "-m", "pipeline.generator"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      GEN_RATE: "8"
+      GEN_JITTER: "0.5"
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      kafka: { condition: service_healthy }
+    restart: unless-stopped
+
   screensmart-worker:
     build: { context: ./screensmart_app }
     image: screensmart-api:latest    # same image as the API, different command

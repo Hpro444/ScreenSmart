@@ -37,7 +37,7 @@ function makeSprite([r, g, b]) {
   return c
 }
 
-export default function Background({ intensity = 1, ambient = 1 }) {
+export default function Background({ intensity = 1, ambient = 0 }) {
   const ref = useRef(null)
 
   useEffect(() => {
@@ -50,7 +50,6 @@ export default function Background({ intensity = 1, ambient = 1 }) {
       blocked: makeSprite(COLORS.blocked),
     }
     const particles = []
-    const queue = []
     const MAX = 1600
     let W = 0, H = 0
 
@@ -66,7 +65,8 @@ export default function Background({ intensity = 1, ambient = 1 }) {
     resize()
     window.addEventListener('resize', resize)
 
-    const off = feed.onVerdict((v) => queue.push(v.status || 'allowed'))
+    // one dot per processed transaction, spawned the instant its verdict arrives (real-time)
+    const off = feed.onVerdict((v) => spawn(v.status || 'allowed'))
 
     function spawn(status) {
       if (particles.length >= MAX) return
@@ -99,15 +99,12 @@ export default function Background({ intensity = 1, ambient = 1 }) {
       ctx.fillStyle = `rgba(${BG[0]},${BG[1]},${BG[2]},0.2)`
       ctx.fillRect(0, 0, W, H)
 
-      // drain real verdicts (smoothed so a 50/s replay burst doesn't all appear at once)
-      let budget = Math.max(2, Math.ceil(queue.length / 8))
-      while (queue.length && budget-- > 0) spawn(queue.shift())
-
-      // ambient filler
-      ambientAcc += dt * 0.5 * intensity * ambient
-      while (ambientAcc >= 1) {
-        ambientAcc -= 1
-        if (queue.length < 24) spawn(AMBIENT[(Math.random() * AMBIENT.length) | 0])
+      // Real verdicts are spawned immediately in the feed callback above — every dot is a
+      // genuinely processed transaction. Ambient is an opt-in fallback (default off) so the
+      // field isn't dead if the live feed ever drops.
+      if (ambient > 0) {
+        ambientAcc += dt * 0.5 * intensity * ambient
+        while (ambientAcc >= 1) { ambientAcc -= 1; spawn(AMBIENT[(Math.random() * AMBIENT.length) | 0]) }
       }
 
       ctx.globalCompositeOperation = 'lighter'

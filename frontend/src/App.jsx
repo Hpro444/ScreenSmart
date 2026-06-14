@@ -32,7 +32,7 @@ function Landing({ onEnter }) {
   return (
     <main className="landing" onClick={onEnter} role="button" tabIndex={0}
           aria-label="Open the review desk">
-      <Background intensity={1} />
+      <Background intensity={1} ambient={0} />
       <div className="landing-scrim" />
 
       <header className="top-bar">
@@ -113,7 +113,7 @@ function Review({ onBack }) {
 
   return (
     <main className="review">
-      <div className="review-bg"><Background intensity={0.55} ambient={0.5} /></div>
+      <div className="review-bg"><Background intensity={0.55} ambient={0} /></div>
       <div className="review-scrim" />
 
       <header className="rev-head">
