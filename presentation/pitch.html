@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 16mm 18mm; }
+  * { box-sizing: border-box; }
+  body { font-family: Inter, system-ui, sans-serif; color: #11161f; margin: 0; line-height: 1.5; }
+  .top { display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 2px solid #0f766e; padding-bottom: 10px; margin-bottom: 6px; }
+  .brand { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+  .brand span { color: #0d9488; }
+  .meta { text-align: right; font-size: 11px; color: #5b647a; line-height: 1.4; }
+  .meta b { color: #11161f; }
+  .totbar { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #5b647a; margin: 4px 0 14px; }
+  .totbar .pill { background: #0d9488; color: #fff; font-weight: 700; border-radius: 999px; padding: 2px 9px; font-size: 11px; }
+
+  .seg { margin: 0 0 13px; padding-left: 78px; position: relative; }
+  .cue { position: absolute; left: 0; top: 1px; width: 66px; }
+  .t { font-size: 12px; font-weight: 800; color: #0d9488; font-variant-numeric: tabular-nums; }
+  .h { font-size: 11px; font-weight: 700; color: #8a93a6; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+  .seg p { margin: 0; font-size: 13.5px; }
+  .seg p + p { margin-top: 5px; }
+  b.k { color: #0b3d39; background: #d7f2ee; padding: 0 2px; border-radius: 3px; }
+
+  .demo { padding-left: 78px; }
+  .demo .box { border: 1px solid #cfe9e5; background: #f3fbfa; border-radius: 10px; padding: 10px 14px; }
+  .demo ol { margin: 4px 0 0; padding-left: 18px; }
+  .demo li { font-size: 13px; margin: 3px 0; }
+  .foot { margin-top: 14px; padding-top: 8px; border-top: 1px solid #e6e9ef; font-size: 10.5px; color: #8a93a6; display: flex; justify-content: space-between; }
+  .tip { font-style: italic; color: #5b647a; font-size: 12px; }
+</style></head>
+<body>
+  <div class="top">
+    <div class="brand">Screen<span>Smart</span></div>
+    <div class="meta"><b>3-minute pitch</b><br>team <b>ctrl alt elite</b><br>Garaža FinTech AI Hackathon · 2026</div>
+  </div>
+  <div class="totbar"><span class="pill">~3:00 total</span> read at a calm pace · the demo is the centrepiece — leave ~40s for it</div>
+
+  <div class="seg">
+    <div class="cue"><div class="t">0:00</div><div class="h">Hook</div></div>
+    <p>Every year, <b class="k">2 to 5 percent of global GDP</b> — up to two trillion dollars — is laundered.
+    And only about <b class="k">1 percent</b> is ever caught.</p>
+    <p>Why? Because the people moving that money never put their own name on the payment. They hide behind
+    shell companies, stand-ins, and chains of accounts. A bank checks the name against a sanctions list,
+    sees nothing, and lets it through.</p>
+  </div>
+
+  <div class="seg">
+    <div class="cue"><div class="t">0:30</div><div class="h">What it is</div></div>
+    <p>We're <b>ctrl alt elite</b>, and we built <b>ScreenSmart</b> — real-time sanctions screening that doesn't
+    just check the name, it <b class="k">follows the money</b>. Every payment gets a <b>MATCH, REVIEW, or
+    NO-MATCH</b> verdict in under a second, streamed live to an analyst dashboard.</p>
+  </div>
+
+  <div class="seg">
+    <div class="cue"><div class="t">1:00</div><div class="h">How it works</div></div>
+    <p>Two engines screen every payment in parallel. The first is <b>name &amp; identity</b> — a machine-learning
+    model that catches typos, transliterations and aliases; "Qadhafi" spelled five different ways.</p>
+    <p>The second is the <b>network engine</b>: it traces the account through a graph of counterparties to find
+    hidden links — payee, to an intermediary, to a <b class="k">sanctioned entity two hops away</b>. The results
+    are combined, worst-case wins, and the payment is flagged with a full evidence chain.</p>
+    <p>And because an analyst shouldn't need a data-science degree, a <b class="k">local AI model — running
+    entirely on-device</b> — explains, in plain English, exactly why each payment was flagged.</p>
+  </div>
+
+  <div class="seg" style="margin-bottom:6px">
+    <div class="cue"><div class="t">1:50</div><div class="h">Demo</div></div>
+    <p class="tip">→ switch to the live dashboard</p>
+  </div>
+  <div class="demo">
+    <div class="box"><ol>
+      <li>"Every dot is a real payment being screened right now — <b>green</b> cleared, <b>amber</b> review, <b>red</b> blocked."</li>
+      <li>Click a flagged one → "here's the <b>network graph</b>: this account routes through a middle account to a sanctioned source."</li>
+      <li>Hit <b>Explain</b> → "the on-device AI walks me through it in plain language."</li>
+      <li>Click <b>Block</b> → "that account becomes a known-bad node, so the next payment through it is caught automatically. <b>The system learns.</b>"</li>
+    </ol></div>
+  </div>
+
+  <div class="seg" style="margin-top:13px">
+    <div class="cue"><div class="t">2:30</div><div class="h">Close</div></div>
+    <p>Sanctions screening today catches the obvious and misses the clever. ScreenSmart <b class="k">catches the
+    network</b>, <b class="k">explains the decision</b>, and gets smarter every time an analyst acts.</p>
+    <p>Real-time, on-device, and built in a weekend. That's <b>ScreenSmart</b>. Thank you.</p>
+  </div>
+
+  <div class="foot">
+    <span>ScreenSmart · ctrl alt elite</span>
+    <span>Tip: if you're short on time, cut the second hook paragraph and go straight to the demo.</span>
+  </div>
+</body></html>
