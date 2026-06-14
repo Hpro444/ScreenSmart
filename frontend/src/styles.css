@@ -330,6 +330,45 @@ kbd {
 .err { color: var(--blk); }
 .pad { padding: 14px 16px; font-size: 13.5px; }
 
+/* ============================== txn modal ============================== */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; cursor: default;
+  background: rgba(4, 6, 12, 0.62);
+  backdrop-filter: blur(6px);
+  animation: fade 0.16s ease;
+}
+.modal {
+  width: min(640px, 100%);
+  max-height: 86vh; display: flex; flex-direction: column;
+  background: rgba(15, 19, 30, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.8);
+  overflow: hidden;
+  animation: pop 0.18s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.modal-top {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; border-bottom: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.02);
+}
+.modal-id { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.modal-close {
+  margin-left: auto; width: 30px; height: 30px; border-radius: 9px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--text);
+  cursor: pointer; font-size: 13px; line-height: 1;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.modal-close:hover { background: rgba(247, 72, 86, 0.16); border-color: rgba(247, 72, 86, 0.4); }
+.modal-body { overflow-y: auto; padding: 18px 20px; }
+.modal-name { margin: 0 0 4px; font-size: 21px; font-weight: 700; word-break: break-word; }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pop { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
+.modal-body::-webkit-scrollbar { width: 9px; }
+.modal-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+
 /* scrollbars */
 .queue-list::-webkit-scrollbar, .detail::-webkit-scrollbar { width: 9px; }
 .queue-list::-webkit-scrollbar-thumb, .detail::-webkit-scrollbar-thumb {

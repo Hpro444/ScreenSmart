@@ -21,19 +21,22 @@ function useMeta() {
 /* ----------------------------- landing ----------------------------- */
 function Landing({ onEnter }) {
   const { counts, connected } = useMeta()
+  const [picked, setPicked] = useState(null)
   useEffect(() => {
     const onKey = (e) => {
+      if (picked) return                              // modal open → let it handle keys
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onEnter() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onEnter])
+  }, [onEnter, picked])
 
   return (
     <main className="landing" onClick={onEnter} role="button" tabIndex={0}
           aria-label="Open the review desk">
-      <Background intensity={1} ambient={0} />
+      <Background intensity={1} ambient={0} onPick={setPicked} />
       <div className="landing-scrim" />
+      {picked && <TxnModal d={picked} onClose={() => setPicked(null)} />}
 
       <header className="top-bar">
         <div className="brand-mini"><span className="mark">◈</span> ScreenSmart</div>
@@ -113,7 +116,7 @@ function Review({ onBack }) {
 
   return (
     <main className="review">
-      <div className="review-bg"><Background intensity={0.55} ambient={0} /></div>
+      <div className="review-bg"><Background intensity={0.55} ambient={0} onPick={setSel} /></div>
       <div className="review-scrim" />
 
       <header className="rev-head">
@@ -176,14 +179,17 @@ function EmptyDetail() {
   )
 }
 
-function Dossier({ d }) {
+function Dossier({ d, hideHead }) {
   const t = d.txn || {}
   return (
     <div className="dossier">
-      <div className="dossier-head">
-        <h2>{t.bene_name || t.wallet || d.txn_id}</h2>
-        <span className={'pill ' + statusClass(d.combined_verdict)}>{d.combined_verdict}</span>
-      </div>
+      {!hideHead && (
+        <div className="dossier-head">
+          <h2>{t.bene_name || t.wallet || d.txn_id}</h2>
+          <span className={'pill ' + statusClass(d.combined_verdict)}>{d.combined_verdict}</span>
+        </div>
+      )}
+      {hideHead && <h2 className="modal-name">{t.bene_name || t.wallet || d.txn_id}</h2>}
       <div className="grid">
         <Field k="Txn ID" v={d.txn_id} />
         <Field k="Channel" v={t.channel} />
@@ -204,6 +210,26 @@ function Dossier({ d }) {
           <ul className="reasons">{d.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
         </>
       )}
+    </div>
+  )
+}
+
+function TxnModal({ d, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return (
+    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); onClose() }}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-top">
+          <span className={'pill ' + statusClass(d.combined_verdict)}>{d.combined_verdict}</span>
+          <span className="modal-id">{d.txn_id}</span>
+          <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="modal-body"><Dossier d={d} hideHead /></div>
+      </div>
     </div>
   )
 }
