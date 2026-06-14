@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import Background from './Background.jsx'
 import { feed } from './feed.js'
-import { getReview } from './api.js'
+import { getReview, decide, getNode } from './api.js'
 
 const REDUCE = typeof window !== 'undefined' && window.matchMedia
   && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -16,12 +16,13 @@ export default function App() {
 
   const go = useCallback((target) => {
     if (busy.current || target === view) return
-    if (REDUCE) { setView(target); return }
+    // back (→ landing) swaps instantly with no animation; only forward (→ review) animates
+    if (REDUCE || target !== 'review') { setView(target); return }
     busy.current = true
-    setDir(target === 'review' ? 'fwd' : 'back')
+    setDir('fwd')
     setAnim(true)                                          // one compositor keyframe sweeps in→hold→out
-    setTimeout(() => { setView(target); setEntering(true) }, 320)  // swap while fully covered
-    setTimeout(() => { setAnim(false); setEntering(false); busy.current = false }, 660)
+    setTimeout(() => { setView(target); setEntering(true) }, 300)  // swap while fully covered
+    setTimeout(() => { setAnim(false); setEntering(false); busy.current = false }, 700)
   }, [view])
 
   return (
@@ -138,22 +139,33 @@ function Review({ onBack }) {
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
   const [graphOnly, setGraphOnly] = useState(false)
-  const debounce = useRef(null)
 
   const load = useCallback((status) => {
     setLoading(true)
-    getReview(status)
+    // fetch the whole current list on open (cleared can be huge, so cap it) — keeps the
+    // count stable across visits instead of resetting to a small page
+    const limit = status === 'allowed' ? 1500 : 6000
+    getReview(status, limit)
       .then((d) => { setItems(d); setErr('') })
       .catch(() => setErr('Could not reach the queue.'))
       .finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => { setSel(null); load(tab) }, [tab, load])
+  // full fetch only on tab switch / first load
+  useEffect(() => { setSel(null); setItems([]); load(tab) }, [tab, load])  // clear so no stale rows show under the skeletons
 
-  // keep the active list fresh as matching verdicts stream in (debounced)
+  // live updates: merge each new verdict in place instead of refetching — existing rows
+  // never move (no reordering / no flicker); brand-new ones are appended to the end so the
+  // list grows quietly without jumping.
   useEffect(() => feed.onVerdict((v) => {
-    if (v.status === tab) { clearTimeout(debounce.current); debounce.current = setTimeout(() => load(tab), 1000) }
-  }), [tab, load])
+    if (v.status !== tab) return
+    setItems((xs) => {
+      const i = xs.findIndex((d) => d.txn_id === v.txn_id)
+      if (i !== -1) { const c = xs.slice(); c[i] = v; return c }   // update in place
+      const next = xs.concat(v)                                    // append new arrival
+      return next.length > 7000 ? next.slice(next.length - 7000) : next
+    })
+  }), [tab])
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onBack() }
@@ -179,7 +191,10 @@ function Review({ onBack }) {
       .toLowerCase().includes(needle)
   })
 
-  const resolve = (txnId) => {
+  // record the analyst decision (persists + flags the payee account for block/escalate),
+  // then optimistically drop it from the queue
+  const resolve = (txnId, decision) => {
+    decide(txnId, decision).catch(() => {})
     setItems((xs) => xs.filter((i) => i.txn_id !== txnId))
     setSel((s) => (s && s.txn_id === txnId ? null : s))
   }
@@ -187,9 +202,14 @@ function Review({ onBack }) {
   const VISIBLE = 120
   const visible = filtered.slice(0, VISIBLE)
   const meta = TABS[tab]
+  // the badge should reflect the TRUE total for this status (from the live counts), not the
+  // loaded slice — cleared can be 40k+ while we only fetch the latest ~1.5k for the list.
+  const filtering = !!needle || graphOnly
+  const total = counts[tab] ?? items.length
+  const badgeN = filtering ? filtered.length : total
+  const partial = !filtering && items.length < total
   return (
     <main className="review">
-      <div className="review-bg"><Background intensity={0.5} ambient={0} onPick={setSel} /></div>
       <div className="review-scrim" />
 
       <header className="rev-head">
@@ -211,8 +231,9 @@ function Review({ onBack }) {
           <div className="queue-top">
             <div className="queue-title">
               <span className={'qtitle-dot ' + meta.sev} />{meta.title}
-              <span className="badge">{filtered.length}</span>
+              <span className="badge">{Number(badgeN).toLocaleString()}</span>
             </div>
+            {partial && <div className="queue-hint">showing latest {items.length.toLocaleString()}</div>}
             <div className="search">
               <SearchIcon />
               <input value={q} onChange={(e) => setQ(e.target.value)}
@@ -224,15 +245,16 @@ function Review({ onBack }) {
             </button>
           </div>
           <div className="queue-list">
-            {loading && <SkeletonRows />}
-            {err && <div className="err pad">{err}</div>}
-            {!loading && !err && filtered.length === 0 &&
-              <div className="muted pad">{items.length ? 'No matches for this filter.' : meta.empty}</div>}
-            {visible.map((d) => (
-              <QueueItem key={d.txn_id} d={d} tab={tab} active={sel?.txn_id === d.txn_id} onClick={() => setSel(d)} />
-            ))}
-            {filtered.length > visible.length &&
-              <div className="queue-more">+{filtered.length - visible.length} more — refine your search</div>}
+            {loading ? <SkeletonRows /> : err ? <div className="err pad">{err}</div>
+              : filtered.length === 0
+                ? <div className="muted pad">{items.length ? 'No matches for this filter.' : meta.empty}</div>
+                : <>
+                    {visible.map((d) => (
+                      <QueueItem key={d.txn_id} d={d} tab={tab} active={sel?.txn_id === d.txn_id} onClick={() => setSel(d)} />
+                    ))}
+                    {filtered.length > visible.length &&
+                      <div className="queue-more">+{filtered.length - visible.length} more — refine your search</div>}
+                  </>}
           </div>
         </aside>
 
@@ -283,8 +305,10 @@ function Dossier({ d, onResolve, hideHead }) {
   const crypto = !!t.wallet && !t.bene_name
   const name = t.bene_name || t.wallet || d.txn_id
   const confidence = Math.max(Number(d.name_result?.score) || 0, Number(d.exposure_result?.score) || 0)
+  const [nodeKey, setNodeKey] = useState(null)   // drill-into-graph-node explorer
   return (
     <div className="dossier">
+      {nodeKey && <NodeExplorer startKey={nodeKey} onClose={() => setNodeKey(null)} />}
       {hideHead ? (
         <h2 className="modal-name">{name}</h2>
       ) : (
@@ -336,7 +360,7 @@ function Dossier({ d, onResolve, hideHead }) {
       </div>
 
       <ModuleCard title="Identity screening" icon="🪪" r={d.name_result} />
-      <ModuleCard title="Crypto graph exposure" icon="🕸️" r={d.exposure_result} />
+      <ModuleCard title="Network exposure" icon="🕸️" r={d.exposure_result} onNodeClick={setNodeKey} />
 
       {d.reasons?.length > 0 && (
         <div className="card">
@@ -346,12 +370,189 @@ function Dossier({ d, onResolve, hideHead }) {
       )}
 
       {onResolve && (
-        <div className="actions">
-          <button className="act clear" onClick={() => onResolve(d.txn_id)}>✓ Clear</button>
-          <button className="act escalate" onClick={() => onResolve(d.txn_id)}>⚑ Escalate</button>
-          <button className="act block" onClick={() => onResolve(d.txn_id)}>⦸ Block</button>
-        </div>
+        <>
+          <div className="actions">
+            <button className="act clear" onClick={() => onResolve(d.txn_id, 'clear')}>✓ Clear</button>
+            <button className="act escalate" onClick={() => onResolve(d.txn_id, 'escalate')}>⚑ Escalate</button>
+            <button className="act block" onClick={() => onResolve(d.txn_id, 'block')}>⦸ Block</button>
+          </div>
+          {(d.txn?.bene_account) &&
+            <div className="act-note">Escalate / Block flags account <code>{clip(d.txn.bene_account, 22)}</code> as a risk node for future exposure tracing.</div>}
+        </>
       )}
+    </div>
+  )
+}
+
+function NodeExplorer({ startKey, onClose }) {
+  const [stack, setStack] = useState([startKey])   // navigation history of node keys
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+  const current = stack[stack.length - 1]
+
+  useEffect(() => {
+    let alive = true
+    setLoading(true); setErr('')
+    getNode(current)
+      .then((d) => { if (alive) { if (d) setData(d); else setErr('This node isn’t in the graph.') } })
+      .catch(() => alive && setErr('Could not load node.'))
+      .finally(() => alive && setLoading(false))
+    return () => { alive = false }
+  }, [current])
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const push = (k) => { if (k && k !== current) setStack((s) => [...s, k]) }
+  const back = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s))
+
+  const node = data?.node
+  const exp = data?.exposure
+  return (
+    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); onClose() }}>
+      <div className="modal node-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-top">
+          {stack.length > 1
+            ? <button className="modal-close" onClick={back} title="Back">←</button>
+            : <span className="node-kicker">NODE</span>}
+          <span className="modal-id">{clip(current, 34)}</span>
+          <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="modal-body">
+          {loading && <div className="muted pad">Loading node…</div>}
+          {err && !loading && <div className="muted pad">{err}</div>}
+          {!loading && !err && node && (
+            <div className="dossier">
+              <div className="dossier-hero">
+                <span className="hero-avatar" style={{ '--h': hue(node.display_name || node.node_key) }}>
+                  {glyph(node.node_type)}
+                </span>
+                <div className="hero-main">
+                  <h2 className="hero-name">{node.display_name || node.node_key}</h2>
+                  <div className="hero-tags">
+                    {node.risk_level && node.risk_level !== 'NONE' &&
+                      <span className={'pill ' + riskPill(node.risk_level)}>{node.risk_level}</span>}
+                    <span className="tag">{node.node_type}</span>
+                    {node.country && <span className="tag">{flag(node.country)} {node.country.toUpperCase()}</span>}
+                    <span className="tag">{data.degree} link{data.degree === 1 ? '' : 's'}</span>
+                    {node.risk_source && <span className="tag">{node.risk_source}</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid">
+                <Field k="Node key" v={node.node_key} />
+                <Field k="Type" v={node.node_type} />
+                {node.created_at && <Field k="In graph since" v={fmtDate(node.created_at)} />}
+                {data.activity?.first_seen && <Field k="Active period"
+                  v={`${fmtDate(data.activity.first_seen)} → ${fmtDate(data.activity.last_seen)}`} />}
+              </div>
+
+              {data.belongs_to?.length > 0 && (
+                <div className="card">
+                  <div className="card-h">Belongs to / held by</div>
+                  <NodeChips items={data.belongs_to} onPick={push} />
+                </div>
+              )}
+              {data.controls?.length > 0 && (
+                <div className="card">
+                  <div className="card-h">Controls ({data.controls.length})</div>
+                  <NodeChips items={data.controls} onPick={push} />
+                </div>
+              )}
+
+              {(data.activity?.sent_tx > 0 || data.activity?.received_tx > 0) && (
+                <div className="card">
+                  <div className="card-h">Activity</div>
+                  <div className="grid">
+                    <Field k="Total sent" v={fmtAmount(data.activity.total_sent)} />
+                    <Field k="Total received" v={fmtAmount(data.activity.total_received)} />
+                    <Field k="Sent — txns / payees" v={`${data.activity.sent_tx} / ${data.activity.counterparties_out}`} />
+                    <Field k="Received — txns / payers" v={`${data.activity.received_tx} / ${data.activity.counterparties_in}`} />
+                  </div>
+                </div>
+              )}
+
+              {data.counterparties?.sent_to?.length > 0 && (
+                <div className="card">
+                  <div className="card-h">Top recipients (sent to)</div>
+                  <CounterpartyList items={data.counterparties.sent_to} onPick={push} />
+                </div>
+              )}
+              {data.counterparties?.received_from?.length > 0 && (
+                <div className="card">
+                  <div className="card-h">Top sources (received from)</div>
+                  <CounterpartyList items={data.counterparties.received_from} onPick={push} />
+                </div>
+              )}
+              {data.shared_identifiers?.length > 0 && (
+                <div className="card">
+                  <div className="card-h">Shares identifiers with</div>
+                  <NodeChips items={data.shared_identifiers} onPick={push} />
+                </div>
+              )}
+
+              {exp ? (
+                <>
+                  <div className="card-h" style={{ marginTop: 4 }}>Exposure</div>
+                  <RiskMeter score={exp.score} />
+                  {exp.reason && <div className="card"><div className="card-h">Assessment</div>
+                    <div className="xev-exp">{exp.reason}</div></div>}
+                  {data.graph?.nodes?.length > 0 && (
+                    <div className="card">
+                      <div className="card-h">Exposure path from this node</div>
+                      <ExposureGraph graph={data.graph} onNodeClick={push} />
+                    </div>
+                  )}
+                  {data.chain?.length > 1 && <ExposureChain steps={data.chain} />}
+                </>
+              ) : (
+                <div className="card"><div className="card-h">Exposure</div>
+                  <div className="xev-exp">No exposure path recorded — this node isn’t linked
+                    to a sanctioned or suspicious source in the graph.</div></div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NodeChips({ items, onPick }) {
+  return (
+    <div className="node-chips">
+      {items.map((n, i) => (
+        <button key={n.id + i} className={'node-chip ' + riskCls(n.risk)} onClick={() => onPick(n.id)} title={n.id}>
+          <span className="nc-glyph">{glyph(n.type)}</span>
+          <span className="nc-label">{clip(n.label, 22)}</span>
+          {n.relation && <span className="nc-rel">{n.relation.replace(/_/g, ' ').toLowerCase()}</span>}
+          {n.risk && n.risk !== 'NONE' && <span className={'nc-dot ' + riskCls(n.risk)} />}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function CounterpartyList({ items, onPick }) {
+  return (
+    <div className="cp-list">
+      {items.map((n, i) => (
+        <button key={n.id + i} className="cp-row" onClick={() => onPick(n.id)} title={n.id}>
+          <span className={'cp-glyph ' + riskCls(n.risk)}>{glyph(n.type)}</span>
+          <span className="cp-main">
+            <span className="cp-name">{clip(n.label, 26)}{n.risk && n.risk !== 'NONE' &&
+              <span className={'nc-dot ' + riskCls(n.risk)} />}</span>
+            <span className="cp-meta">{[flag(n.country), n.country ? n.country.toUpperCase() : null, `${n.transaction_count} txn`]
+              .filter(Boolean).join(' · ')}</span>
+          </span>
+          <span className="cp-amt">{fmtAmount(n.amount)}</span>
+        </button>
+      ))}
     </div>
   )
 }
@@ -370,7 +571,7 @@ function RiskMeter({ score }) {
   )
 }
 
-function ModuleCard({ title, icon, r }) {
+function ModuleCard({ title, icon, r, onNodeClick }) {
   if (!r || !r.applicable) {
     return <div className="card na"><span className="card-h">{icon} {title}</span><span className="na-tag">not applicable</span></div>
   }
@@ -393,7 +594,7 @@ function ModuleCard({ title, icon, r }) {
         </div>
       </div>
       {r.reasons?.length > 0 && <ul className="reasons sm">{r.reasons.map((x, i) => <li key={i}>{x}</li>)}</ul>}
-      {r.detail?.graph?.nodes?.length > 0 && <ExposureGraph graph={r.detail.graph} />}
+      {r.detail?.graph?.nodes?.length > 0 && <ExposureGraph graph={r.detail.graph} onNodeClick={onNodeClick} />}
       {r.detail?.chain?.length > 1 && <ExposureChain steps={r.detail.chain} />}
       {r.detail?.evidence?.length > 0 && <ExposureEvidence items={r.detail.evidence} />}
     </div>
@@ -445,7 +646,7 @@ function ExposureEvidence({ items }) {
   )
 }
 
-function ExposureGraph({ graph }) {
+function ExposureGraph({ graph, onNodeClick }) {
   const nodes = graph?.nodes || []
   const edges = graph?.edges || []
   if (!nodes.length) return null
@@ -478,7 +679,9 @@ function ExposureGraph({ graph }) {
             )
           })}
           {nodes.map((n, i) => (
-            <g key={n.id + i} transform={`translate(${xs[i]},${CY})`}>
+            <g key={n.id + i} transform={`translate(${xs[i]},${CY})`}
+               className={onNodeClick ? 'xg-clickable' : ''}
+               onClick={onNodeClick ? (e) => { e.stopPropagation(); onNodeClick(n.id) } : undefined}>
               <circle r={R} className={'xg-node ' + riskCls(n.risk)
                 + (n.role === 'account' ? ' acct' : '') + (n.role === 'source' ? ' src' : '')} />
               <text className="xg-glyph" y="4.5">{glyph(n.type)}</text>
@@ -496,6 +699,7 @@ function ExposureGraph({ graph }) {
         <span><i className="xg-dot none" /> clean</span>
         <span className="xg-meta">{graph.depth} hop{graph.depth === 1 ? '' : 's'} to source · exposure {Math.round((graph.score || 0) * 100)}%</span>
       </div>
+      {onNodeClick && <div className="xgraph-tip">Click any node to inspect it</div>}
     </div>
   )
 }
@@ -525,7 +729,9 @@ function TxnModal({ d, onClose }) {
 }
 
 function SkeletonRows() {
-  return <>{Array.from({ length: 7 }).map((_, i) => <div key={i} className="skel" />)}</>
+  // enough rows to fill the panel so the whole list reads as loading (no half-skeleton/
+  // half-content); excess is clipped by the list's overflow
+  return <>{Array.from({ length: 16 }).map((_, i) => <div key={i} className="skel" />)}</>
 }
 
 function SearchIcon() {
@@ -549,6 +755,9 @@ function fmtAmount(amount, currency) {
 
 function fmtTime(iso) {
   try { return new Date(iso).toLocaleTimeString() } catch { return iso }
+}
+function fmtDate(iso) {
+  try { return new Date(iso).toLocaleDateString() } catch { return iso }
 }
 
 function initials(name) {
@@ -576,6 +785,10 @@ function flag(cc) {
 function riskCls(r) {
   const x = (r || '').toUpperCase()
   return x === 'SANCTIONED' ? 'sanc' : x === 'SUSPICIOUS' ? 'susp' : 'none'
+}
+function riskPill(r) {
+  const x = (r || '').toUpperCase()
+  return x === 'SANCTIONED' ? 'blk' : x === 'SUSPICIOUS' ? 'rev' : 'ok'
 }
 function glyph(type) {
   const t = (type || '').toUpperCase()

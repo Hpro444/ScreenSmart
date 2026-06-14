@@ -116,7 +116,7 @@ def health():
 def stats():
     counts = db.counts(ENGINE)
     return {"allowed": counts.get("allowed", 0), "review": counts.get("review", 0),
-            "blocked": counts.get("blocked", 0)}
+            "blocked": counts.get("blocked", 0), "flagged": db.flagged_count(ENGINE)}
 
 
 _STATUSES = {"allowed", "review", "blocked"}
@@ -127,7 +127,7 @@ def review_queue(_: str = Depends(require_auth), status: str = "review", limit: 
     """Dossiers for a given status (review | allowed | blocked) — sender/recipient/
     identifiers + reasons + module results. Defaults to the REVIEW queue."""
     status = status if status in _STATUSES else "review"
-    return db.list_by_status(ENGINE, status, min(max(limit, 1), 500))
+    return db.list_by_status(ENGINE, status, min(max(limit, 1), 6000))
 
 
 @app.get("/txn/{txn_id}")
@@ -136,3 +136,33 @@ def dossier(txn_id: str, _: str = Depends(require_auth)):
     if d is None:
         raise HTTPException(404, "not found")
     return d
+
+
+@app.get("/node/{node_key:path}")
+def node(node_key: str, _: str = Depends(require_auth)):
+    """Exposure view for a single graph node — used to drill into any node of a graph."""
+    v = db.node_view(ENGINE, node_key)
+    if v is None:
+        raise HTTPException(404, "node not in graph")
+    return v
+
+
+class Decision(BaseModel):
+    decision: str            # clear | escalate | block
+
+
+@app.post("/review/{txn_id}/decision")
+def decide(txn_id: str, body: Decision, analyst: str = Depends(require_auth)):
+    """Record an analyst triage decision. block/escalate also flag the payee account
+    (bene_account) as a risk node in the graph so the exposure engine learns from it."""
+    if body.decision not in {"clear", "escalate", "block"}:
+        raise HTTPException(422, "decision must be clear|escalate|block")
+    d = db.get_dossier(ENGINE, txn_id)
+    txn = (d or {}).get("txn") or {}
+    account = txn.get("bene_account") or None
+    result = db.record_decision(
+        ENGINE, txn_id=txn_id, decision=body.decision, analyst=analyst,
+        account=account, account_type="ACCOUNT",     # bene_account keys are IBAN/account nodes
+        display_name=txn.get("bene_name") or None,
+        country=txn.get("bene_country") or None)
+    return {"ok": True, "txn_id": txn_id, "decision": body.decision, **result}

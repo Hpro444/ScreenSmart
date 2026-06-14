@@ -138,10 +138,60 @@ def _node_key(v: dict) -> str | None:
     return v.get("bene_account") or v.get("wallet") or None
 
 
+# how often to check for new analyst-flagged nodes and re-propagate (0 disables)
+REFRESH_SECONDS = float(os.environ.get("EXPOSURE_REFRESH_SECONDS", "120"))
+
+
+def _analyst_flag_count(engine) -> int:
+    """Cheap probe: how many nodes were flagged by an analyst (clear/block feedback)."""
+    import sqlalchemy as sa
+    with engine.connect() as conn:
+        return int(conn.execute(sa.text(
+            "SELECT count(*) FROM graph_nodes WHERE risk_source LIKE 'analyst:%'")).scalar() or 0)
+
+
+def _repropagate() -> "AccountExposureLookup":
+    """Re-run the offline propagation (picks up analyst-flagged nodes) and return a fresh
+    in-memory lookup. Synchronous/CPU-bound — call inside a thread executor."""
+    import datetime as dt
+    from .db.database import get_engine
+    from .exposure.precompute import load_graph, compute_exposure, write_exposure_rows
+    engine = get_engine()
+    today = dt.date.today()
+    nodes, adjacency, _ = load_graph(engine, today=today)
+    rows, _stats = compute_exposure(nodes, adjacency, max_depth=2, top_k=20,
+                                    min_score=0.03, hub_degree_threshold=200, today=today)
+    write_exposure_rows(engine, rows, reset=True)
+    return AccountExposureLookup.load(engine)
+
+
+async def _refresh_loop(state: dict) -> None:
+    """Watch for new analyst flags; when the count rises, re-propagate and hot-swap the
+    lookup so flagged accounts start influencing exposure verdicts without a restart."""
+    if REFRESH_SECONDS <= 0:
+        return
+    from .db.database import get_engine
+    loop = asyncio.get_running_loop()
+    engine = get_engine()
+    last = await loop.run_in_executor(None, _analyst_flag_count, engine)
+    while True:
+        await asyncio.sleep(REFRESH_SECONDS)
+        try:
+            now = await loop.run_in_executor(None, _analyst_flag_count, engine)
+            if now != last:
+                print(f"[exposure.worker] {now - last} new analyst flag(s) → re-propagating…", flush=True)
+                state["lookup"] = await loop.run_in_executor(None, _repropagate)
+                last = now
+                print("[exposure.worker] exposure index refreshed; flags now in effect", flush=True)
+        except Exception as e:
+            print(f"[exposure.worker] refresh skipped: {e}", flush=True)
+
+
 async def run() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
-    lookup = AccountExposureLookup.load()
-    print(f"[exposure.worker] loaded exposure index; bootstrap={BOOTSTRAP}", flush=True)
+    state = {"lookup": AccountExposureLookup.load()}
+    print(f"[exposure.worker] loaded exposure index; bootstrap={BOOTSTRAP}; "
+          f"refresh={REFRESH_SECONDS}s", flush=True)
     producer = AIOKafkaProducer(
         bootstrap_servers=BOOTSTRAP,
         value_serializer=lambda v: json.dumps(v, default=str).encode(),
@@ -152,6 +202,7 @@ async def run() -> None:
         enable_auto_commit=True, auto_offset_reset="earliest")
     await producer.start()
     await consumer.start()
+    refresher = asyncio.create_task(_refresh_loop(state))
     try:
         async for msg in consumer:
             v = msg.value
@@ -161,13 +212,14 @@ async def run() -> None:
             key = _node_key(v)
             if key:
                 try:
-                    out = _result(txn_id, lookup.screen_account(key), lookup)
+                    out = _result(txn_id, state["lookup"].screen_account(key), state["lookup"])
                 except Exception as e:        # never drop a txn on a screening error
                     out = {**_na(txn_id), "reasons": [f"exposure error: {e}"]}
             else:
                 out = _na(txn_id)
             await producer.send_and_wait(TOPIC_OUT, key=txn_id, value=out)
     finally:
+        refresher.cancel()
         with contextlib.suppress(Exception):
             await consumer.stop()
         with contextlib.suppress(Exception):

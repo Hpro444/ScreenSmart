@@ -35,6 +35,29 @@ export async function getStats() {
   } catch { return { allowed: 0, review: 0, blocked: 0 } }
 }
 
+export async function decide(txnId, decision) {
+  let token = await ensureToken()
+  const opts = (t) => ({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+    body: JSON.stringify({ decision }),
+  })
+  let r = await fetch(`${API}/review/${encodeURIComponent(txnId)}/decision`, opts(token))
+  if (r.status === 401) { token = await ensureToken(true); r = await fetch(`${API}/review/${encodeURIComponent(txnId)}/decision`, opts(token)) }
+  if (!r.ok) throw new Error('decision failed')
+  return r.json()
+}
+
+export async function getNode(nodeKey) {
+  let token = await ensureToken()
+  const url = `${API}/node/${encodeURIComponent(nodeKey)}`
+  let r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (r.status === 401) { token = await ensureToken(true); r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } }) }
+  if (r.status === 404) return null
+  if (!r.ok) throw new Error('node lookup failed')
+  return r.json()
+}
+
 export async function getReview(status = 'review', limit = 200) {
   const path = `${API}/review?status=${encodeURIComponent(status)}&limit=${limit}`
   let token = await ensureToken()

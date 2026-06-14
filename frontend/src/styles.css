@@ -51,6 +51,8 @@ kbd {
 
 /* a directional curtain wipes across (single compositor keyframe: in → hold → out) to
    mask the view swap. one animation = no transition-toggle jump → smooth. */
+/* a directional curtain wipes across (single compositor keyframe: in → hold → out) to
+   mask the view swap. one animation = no transition-toggle jump → smooth. */
 .curtain {
   position: fixed; inset: 0; z-index: 45; pointer-events: none;
   display: grid; place-items: center;
@@ -63,25 +65,25 @@ kbd {
 }
 .curtain::before { left: 0; }
 .curtain::after { right: 0; }
-.curtain.on.fwd { animation: wipeFwd 0.62s cubic-bezier(0.65, 0, 0.35, 1) both; }
-.curtain.on.back { animation: wipeBack 0.62s cubic-bezier(0.65, 0, 0.35, 1) both; }
+.curtain.on.fwd { animation: wipeFwd 0.68s cubic-bezier(0.65, 0, 0.35, 1) both; }
+.curtain.on.back { animation: wipeBack 0.68s cubic-bezier(0.65, 0, 0.35, 1) both; }
 @keyframes wipeFwd {
-  0% { transform: translateX(-100%); } 42% { transform: translateX(0); }
-  58% { transform: translateX(0); } 100% { transform: translateX(100%); }
+  0% { transform: translateX(-100%); } 40% { transform: translateX(0); }
+  64% { transform: translateX(0); } 100% { transform: translateX(100%); }
 }
 @keyframes wipeBack {
-  0% { transform: translateX(100%); } 42% { transform: translateX(0); }
-  58% { transform: translateX(0); } 100% { transform: translateX(-100%); }
+  0% { transform: translateX(100%); } 40% { transform: translateX(0); }
+  64% { transform: translateX(0); } 100% { transform: translateX(-100%); }
 }
 .curtain-mark {
   font-size: 60px; color: #5eead4; opacity: 0;
   filter: drop-shadow(0 0 22px rgba(94, 234, 212, 0.55));
 }
-.curtain.on .curtain-mark { animation: markPulse 0.62s ease both; }
+.curtain.on .curtain-mark { animation: markPulse 0.68s ease both; }
 @keyframes markPulse {
-  0%, 26% { opacity: 0; transform: scale(0.85); }
-  42%, 58% { opacity: 1; transform: scale(1); }
-  78%, 100% { opacity: 0; transform: scale(0.85); }
+  0%, 24% { opacity: 0; transform: scale(0.85); }
+  40%, 64% { opacity: 1; transform: scale(1); }
+  82%, 100% { opacity: 0; transform: scale(0.85); }
 }
 @media (prefers-reduced-motion: reduce) { .curtain { display: none; } }
 
@@ -287,6 +289,7 @@ kbd {
 .qsev.ok { background: rgba(40, 230, 140, 0.16); color: var(--ok); }
 .qsev.blk { background: rgba(247, 72, 86, 0.16); color: var(--blk); }
 
+.queue-hint { font-size: 11px; color: var(--faint); margin: -4px 0 2px; }
 .queue-more { text-align: center; padding: 12px 8px 6px; font-size: 11.5px; color: var(--faint); }
 .skel {
   height: 58px; margin: 4px 8px; border-radius: 13px;
@@ -405,6 +408,52 @@ kbd {
 .xg-dot.susp { background: var(--rev); }
 .xg-dot.none { background: #8b95a9; }
 .xg-meta { margin-left: auto; color: var(--faint); }
+.xgraph-tip { margin-top: 6px; font-size: 11px; color: var(--faint); text-align: center; }
+.xg-clickable { cursor: pointer; }
+.xg-clickable .xg-node { transition: stroke-width 0.12s ease, filter 0.12s ease; }
+.xg-clickable:hover .xg-node { stroke-width: 3; filter: drop-shadow(0 0 7px rgba(94, 234, 212, 0.65)); }
+.xg-clickable:hover .xg-label { fill: #fff; }
+.node-modal .node-kicker { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; color: var(--faint);
+  border: 1px solid var(--border-soft); padding: 3px 8px; border-radius: 7px; }
+.node-modal .modal-close { width: 30px; height: 30px; }
+
+/* node relationship chips (belongs-to / controls / shared) */
+.node-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.node-chip {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-soft);
+  color: var(--text); border-radius: 10px; padding: 7px 11px; font-size: 12.5px;
+  transition: background 0.13s ease, border-color 0.13s ease;
+}
+.node-chip:hover { background: rgba(94, 234, 212, 0.1); border-color: rgba(94, 234, 212, 0.4); }
+.node-chip.sanc { border-color: rgba(247, 72, 86, 0.4); }
+.node-chip.susp { border-color: rgba(245, 195, 45, 0.4); }
+.nc-glyph { font-weight: 700; opacity: 0.8; }
+.nc-label { font-weight: 600; }
+.nc-rel { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.nc-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-left: 2px; }
+.nc-dot.sanc { background: var(--blk); }
+.nc-dot.susp { background: var(--rev); }
+.nc-dot.none { background: var(--faint); }
+
+/* counterparty rows (top recipients / sources) */
+.cp-list { display: flex; flex-direction: column; gap: 6px; }
+.cp-row {
+  display: flex; align-items: center; gap: 11px; cursor: pointer; text-align: left;
+  background: rgba(255, 255, 255, 0.018); border: 1px solid var(--border-soft);
+  color: var(--text); border-radius: 10px; padding: 8px 11px;
+  transition: background 0.13s ease, border-color 0.13s ease;
+}
+.cp-row:hover { background: rgba(94, 234, 212, 0.08); border-color: rgba(94, 234, 212, 0.35); }
+.cp-glyph { width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border-radius: 8px; font-weight: 700; font-size: 12px;
+  background: rgba(139, 149, 169, 0.16); }
+.cp-glyph.sanc { background: rgba(247, 72, 86, 0.2); color: var(--blk); }
+.cp-glyph.susp { background: rgba(245, 195, 45, 0.2); color: var(--rev); }
+.cp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cp-name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cp-meta { font-size: 11px; color: var(--muted); }
+.cp-amt { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* full route + evidence ("how it was found") */
 .xsec-h { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 16px 0 9px; }
@@ -440,6 +489,8 @@ kbd {
 .act.clear:hover { background: rgba(40, 230, 140, 0.16); border-color: rgba(40, 230, 140, 0.5); color: var(--ok); }
 .act.escalate:hover { background: rgba(245, 195, 45, 0.16); border-color: rgba(245, 195, 45, 0.5); color: var(--rev); }
 .act.block:hover { background: rgba(247, 72, 86, 0.16); border-color: rgba(247, 72, 86, 0.5); color: var(--blk); }
+.act-note { margin-top: 9px; font-size: 11.5px; color: var(--faint); line-height: 1.45; }
+.act-note code { font-family: ui-monospace, monospace; color: var(--muted); background: rgba(255, 255, 255, 0.05); padding: 1px 5px; border-radius: 5px; }
 
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
