@@ -16,6 +16,7 @@ BORDER = RGBColor.from_string("2A3550")
 TEAL   = RGBColor.from_string("5EEAD4")
 BLUE   = RGBColor.from_string("38BDF8")
 VIOLET = RGBColor.from_string("818CF8")
+AIP    = RGBColor.from_string("C084FC")
 GREEN  = RGBColor.from_string("28E68C")
 AMBER  = RGBColor.from_string("F5C32D")
 RED    = RGBColor.from_string("F74856")
@@ -205,21 +206,22 @@ rows = [
     ("Screening engine", "🧠", BLUE,   ["🐍 Python", "🌳 LightGBM", "📈 scikit-learn", "🔤 RapidFuzz"]),
     ("Streaming",        "⚡", VIOLET, ["🟪 Apache Kafka", "🔁 aiokafka", "🧩 scatter-gather"]),
     ("Data & API",       "🗄️", AMBER,  ["🐘 PostgreSQL", "🚀 FastAPI", "🔐 JWT", "🔌 WebSocket"]),
+    ("AI assistant",     "🤖", AIP,    ["🦙 Ollama", "💬 llama3.2", "🧩 LangGraph", "⚡ GPU"]),
     ("Frontend",         "🖥️", GREEN,  ["⚛️ React", "⚡ Vite", "🎨 live canvas"]),
     ("Infra",            "🐳", TEAL,   ["🐳 Docker", "🌐 nginx", "📦 Compose"]),
 ]
-y = 2.2
+y = 2.05
 for name, emo, col, chips in rows:
-    box(s, MSO_SHAPE.OVAL, 0.9, y + 0.05, 0.6, 0.6, fill=PANEL2, line=col, line_w=1.8)
-    text(s, 0.9, y + 0.02, 0.6, 0.62, emo, size=20, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-    text(s, 1.65, y, 2.5, 0.7, name, size=15.5, color=col, bold=True, anchor=MSO_ANCHOR.MIDDLE)
-    cx = 4.25
+    box(s, MSO_SHAPE.OVAL, 0.9, y + 0.03, 0.56, 0.56, fill=PANEL2, line=col, line_w=1.8)
+    text(s, 0.9, y, 0.56, 0.6, emo, size=18, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    text(s, 1.6, y, 2.5, 0.62, name, size=15, color=col, bold=True, anchor=MSO_ANCHOR.MIDDLE)
+    cx = 4.2
     for chip in chips:
         w = 0.42 + 0.108 * len(chip)
-        box(s, MSO_SHAPE.ROUNDED_RECTANGLE, cx, y + 0.12, w, 0.46, fill=PANEL, line=BORDER)
-        text(s, cx, y + 0.12, w, 0.46, chip, size=12.5, color=TEXT, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-        cx += w + 0.18
-    y += 0.9
+        box(s, MSO_SHAPE.ROUNDED_RECTANGLE, cx, y + 0.08, w, 0.44, fill=PANEL, line=BORDER)
+        text(s, cx, y + 0.08, w, 0.44, chip, size=12.5, color=TEXT, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        cx += w + 0.16
+    y += 0.8
 footer(s)
 
 # ============================================================ 7 · ARCHITECTURE
@@ -227,10 +229,12 @@ s = slide()
 kicker(s, "🕸️", "Architecture", VIOLET)
 title(s, "Scatter-gather over Kafka")
 if os.path.exists(ARCH):
-    img_w = Inches(11.6)
-    s.shapes.add_picture(ARCH, int((SW - img_w) / 2), Inches(1.95), width=img_w)
+    # size by height so the full diagram (incl. the AI-assistant row) fits above the caption
+    img_h = Inches(4.7)
+    img_w = img_h * 1320 / 780
+    s.shapes.add_picture(ARCH, int((SW - img_w) / 2), Inches(1.95), height=img_h)
 text(s, 0, 6.95, 13.333, 0.4,
-     "Two engines screen every payment in parallel — name/identity + network exposure — and the accumulator escalates to the worst verdict.",
+     "Two engines screen every payment in parallel — name/identity + network exposure; the accumulator escalates to the worst verdict, and a local LLM explains it.",
      size=12, color=MUTED, align=PP_ALIGN.CENTER)
 
 # ============================================================ 8 · DEMO

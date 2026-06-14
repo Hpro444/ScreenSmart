@@ -27,6 +27,9 @@ into a single dossier, and surfaced live on an analyst dashboard.
 - **Analyst feedback loop** — Block / Escalate on a flagged payment marks the account as a
   risk node in the graph; the exposure engine automatically re-propagates so future
   payments routing through it are caught.
+- **AI assistant** — a local LLM (Ollama · llama3.2, orchestrated with LangGraph) explains,
+  in plain language, *why* a payment was flagged — streamed right into the review desk.
+  Nothing leaves the machine.
 
 ---
 
@@ -51,6 +54,7 @@ An event-driven scatter-gather pipeline over Kafka, backed by one Postgres.
 | `sanctions_ingestion/` | downloads/parses OFAC/OFSI/UN/OpenSanctions → Postgres | `sanctions-ingest` |
 | `streaming/pipeline/` | glue services: ingest gateway, generator, accumulator, ws-gateway | `ingest`, `generator`, `accumulator`, `ws-gateway` |
 | `frontend/` | React + Vite dashboard (live feed + analyst review desk) | `frontend` (nginx) |
+| `chatbot/` | local-LLM assistant (LangGraph + Ollama) that explains flags | `chatbot`, `ollama` |
 | `data/`, `reports/`, `models/` | datasets, charts, trained model | mounted volumes |
 
 > ⚠ `screensmart_app` and `exposure_graph` both use the package name `screensmart`, so they
@@ -76,8 +80,12 @@ The `generator` service then streams realistic payments continuously, so the das
 fills with live traffic on its own.
 
 **Ports**: frontend `:8080` · ws-gateway `:8091` (REST + WS) · ingest `:8090` ·
-screensmart-api `:8000` · kafka host `:29092` · postgres `:5432`.
+screensmart-api `:8000` · chatbot `:8092` · ollama `:11434` · kafka host `:29092` · postgres `:5432`.
 Analyst login is handled automatically by the dashboard (demo: `analyst` / `analyst`).
+
+> **AI assistant**: the `ollama` service runs llama3.2 locally (GPU if available — see the
+> `gpus: all` block); `ollama-init` pulls the model on first bring-up. Point the chatbot at
+> a different host/model via `OLLAMA_BASE_URL` / `OLLAMA_MODEL` in `.env`.
 
 > **Note:** the trained model (`screensmart_app/models/precision_model.joblib`) and the
 > processed datasets are regenerable build artifacts (gitignored). Generate the model with
@@ -95,6 +103,9 @@ Analyst login is handled automatically by the dashboard (demo: `analyst` / `anal
 | `GET /review?status=` | dossiers by status (review / allowed / blocked) |
 | `GET /node/{key}` | a single graph node's full view (owner, counterparties, exposure) |
 | `POST /review/{txn_id}/decision` | record clear / escalate / block; flag the account |
+
+The chatbot (`:8092`) adds `POST /chat` — streams a plain-language explanation of a dossier
+from the local LLM — and `GET /health` (model + Ollama reachability).
 
 ---
 
