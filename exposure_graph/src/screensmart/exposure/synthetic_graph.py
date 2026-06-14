@@ -66,6 +66,19 @@ SCENARIO_COUNTS = {
     "direct_sanctioned_iban": 150,
     "one_hop_exposure": 200,
     "two_hop_exposure": 200,
+    "outbound_to_sanctioned": 40,
+    "sanctioned_entity_to_shell_to_beneficiary": 40,
+    "clean_customer_to_shell_to_sanctioned": 40,
+    "shell_structuring_pass_through": 40,
+    "abnormal_new_counterparty_company": 40,
+    "high_concentration_to_shell": 40,
+    "derived_anchor_milica_to_sanctioned": 20,
+    "mateja_shell_to_derived_anchor": 20,
+    "andrija_funds_derived_proxy": 20,
+    "tiny_upstream_funding_suppressed": 20,
+    "hub_upstream_funding_suppressed": 20,
+    "normal_high_concentration_control_no_match": 20,
+    "shared_hub_false_positive_prevented": 120,
     "high_volume_proxy": 200,
     "shell_company": 150,
     "old_tiny_exposure": 150,
@@ -88,7 +101,27 @@ def money(value: float | int) -> decimal.Decimal:
 
 
 class SyntheticGraphBuilder:
-    """Controlled synthetic graph generator with scenario-aware labels."""
+    """Build a deterministic synthetic exposure graph used by the demo.
+
+    This class is the fixture factory for the whole `exposure_graph` module.
+    It creates:
+
+    - graph nodes (`PERSON`, `COMPANY`, `IBAN`, `BANK`)
+    - aggregated graph edges (`USES_ACCOUNT`, `OWNS`, `SENT_TO`, ...)
+    - labeled synthetic payments with expected verdicts
+
+    The important design choice is that every payment scenario is backed by graph
+    structure that should force the intended outcome after offline precompute:
+
+    - `direct_sanctioned_iban` -> direct `MATCH`
+    - `one_hop_exposure` -> `REVIEW` from a sanctioned source one hop away
+    - `two_hop_exposure` -> `REVIEW` through the 2-hop sanctioned override
+    - `old_tiny_exposure` -> `NO_MATCH` because the weak edge is pruned offline
+    - `shell_company` / `high_volume_proxy` -> `REVIEW` via suspicious intermediaries
+
+    The generator is deterministic for a given seed so that examples in the docs,
+    evaluation outputs, and the stored `best_path` explanations stay stable.
+    """
 
     def __init__(self, seed: int) -> None:
         self.seed = seed
@@ -119,6 +152,7 @@ class SyntheticGraphBuilder:
         risk_level: str = "NONE",
         risk_source: str | None = None,
     ) -> str:
+        """Insert a node once and return its stable graph key."""
         if node_key in self.node_keys:
             return node_key
         self.node_keys.add(node_key)
@@ -148,6 +182,17 @@ class SyntheticGraphBuilder:
         last_seen_days_ago: int,
         confidence: float,
     ) -> None:
+        """Insert or aggregate an edge between two existing graph nodes.
+
+        The graph stores one aggregated edge per `(from, to, edge_type)` triple,
+        not one row per raw transaction. Repeated calls therefore roll up:
+
+        - `total_amount`
+        - `transaction_count`
+        - earliest `first_seen`
+        - latest `last_seen`
+        - max `confidence`
+        """
         key = (from_node_key, to_node_key, edge_type)
         first_seen = TODAY - dt.timedelta(days=max(first_seen_days_ago, last_seen_days_ago))
         last_seen = TODAY - dt.timedelta(days=min(first_seen_days_ago, last_seen_days_ago))
@@ -185,6 +230,7 @@ class SyntheticGraphBuilder:
         expected_verdict: str,
         ground_truth_reason: str,
     ) -> None:
+        """Record a labeled payment case tied to one scenario in the graph."""
         self.case_seq += 1
         case_id = f"{scenario_type}-{self.run_tag}-{self.case_seq:04d}"
         self.payments.append(
@@ -302,9 +348,24 @@ class SyntheticGraphBuilder:
         return iban, country
 
     def build(self) -> None:
+        """Assemble the full synthetic dataset in a fixed order.
+
+        The early builders create the explicit labeled scenarios we care about.
+        The later builders add enough clean and suspicious background structure to
+        make the graph non-trivial and to exercise degree suppression, materiality,
+        and false-positive resistance.
+        """
         self._build_direct_sanctioned_iban()
         self._build_one_hop_exposure()
         self._build_two_hop_exposure()
+        self._build_outbound_to_sanctioned()
+        self._build_sanctioned_entity_to_shell_to_beneficiary()
+        self._build_clean_customer_to_shell_to_sanctioned()
+        self._build_shell_structuring_pass_through()
+        self._build_abnormal_new_counterparty_company()
+        self._build_high_concentration_to_shell()
+        self._build_derived_risk_anchor_chain()
+        self._build_shared_hub_false_positive_prevented()
         self._build_old_tiny_exposure()
         self._build_clean_common_name()
         self._build_shell_company()
@@ -317,6 +378,15 @@ class SyntheticGraphBuilder:
         self.validate()
 
     def validate(self) -> None:
+        """Fail fast if the generated dataset breaks demo expectations.
+
+        Validation protects a few important invariants:
+
+        - minimum graph size targets are met
+        - every required scenario exists
+        - clean labeled accounts are not accidentally connected to risky nodes
+          except through their benign ownership edge
+        """
         counts = {
             "graph_nodes": len(self.nodes),
             "graph_edges": len(self.edges_by_key),
@@ -353,6 +423,7 @@ class SyntheticGraphBuilder:
                 )
 
     def _build_direct_sanctioned_iban(self) -> None:
+        """Create direct sanctioned account cases that must resolve to `MATCH`."""
         for idx in range(SCENARIO_COUNTS["direct_sanctioned_iban"]):
             person_key, person_name, country = self._new_person(
                 risk_level="SANCTIONED",
@@ -388,6 +459,7 @@ class SyntheticGraphBuilder:
             )
 
     def _build_one_hop_exposure(self) -> None:
+        """Create sanctioned source -> recipient paths that are one hop apart."""
         for idx in range(SCENARIO_COUNTS["one_hop_exposure"]):
             sanction_key, sanction_name, country = self._new_person(
                 risk_level="SANCTIONED",
@@ -437,6 +509,7 @@ class SyntheticGraphBuilder:
             )
 
     def _build_two_hop_exposure(self) -> None:
+        """Create sanctioned -> relay -> recipient paths for the 2-hop override."""
         for idx in range(SCENARIO_COUNTS["two_hop_exposure"]):
             sanction_key, sanction_name, country = self._new_person(
                 risk_level="SANCTIONED",
@@ -500,7 +573,736 @@ class SyntheticGraphBuilder:
                 ground_truth_reason="recipient IBAN is two hops away from a sanctioned source through a recent relay account",
             )
 
+    def _build_outbound_to_sanctioned(self) -> None:
+        """Create clean accounts whose outbound history goes directly to a sanctioned account."""
+        for idx in range(SCENARIO_COUNTS["outbound_to_sanctioned"]):
+            clean_owner_key, clean_owner_name, country = self._new_person(label="outbound-clean-owner")
+            clean_iban, clean_country = self._new_iban(country=country, label="outbound-clean-iban")
+            sanction_key, sanction_name, _ = self._new_person(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                sanctioned=True,
+                country=country,
+                label="outbound-sanctioned-owner",
+            )
+            sanctioned_iban, _ = self._new_iban(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                country=country,
+                label="outbound-sanctioned-iban",
+            )
+            self.add_edge(
+                clean_owner_key,
+                clean_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=320,
+                last_seen_days_ago=2,
+                confidence=0.99,
+            )
+            self.add_edge(
+                sanction_key,
+                sanctioned_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=360,
+                last_seen_days_ago=4,
+                confidence=1.0,
+            )
+            self.add_edge(
+                clean_iban,
+                sanctioned_iban,
+                "SENT_TO",
+                amount=22000 + idx * 350,
+                tx_count=2 + idx % 2,
+                first_seen_days_ago=18,
+                last_seen_days_ago=1,
+                confidence=0.97,
+            )
+            self.add_payment(
+                "outbound_to_sanctioned",
+                recipient_name=f"{clean_owner_name} Historic Sender",
+                recipient_iban=clean_iban,
+                recipient_country=clean_country,
+                amount=4800 + idx * 90,
+                currency="EUR",
+                expected_verdict="REVIEW",
+                ground_truth_reason="beneficiary account previously sent a large recent payment directly to a sanctioned account",
+            )
+
+    def _build_sanctioned_entity_to_shell_to_beneficiary(self) -> None:
+        """Create sanctioned owner -> shell company -> clean-looking beneficiary chains."""
+        for idx in range(SCENARIO_COUNTS["sanctioned_entity_to_shell_to_beneficiary"]):
+            sanction_key, sanction_name, country = self._new_person(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                sanctioned=True,
+                label="shell-beneficiary-sanctioned-owner",
+            )
+            shell_key, shell_name, _ = self._new_company(
+                risk_level="NONE",
+                risk_source=None,
+                country=country,
+                suspicious=True,
+                label="shell-beneficiary-company",
+            )
+            beneficiary_iban, beneficiary_country = self._new_iban(country=country, label="shell-beneficiary-target")
+            self.add_edge(
+                sanction_key,
+                shell_key,
+                "OWNS",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=500,
+                last_seen_days_ago=40,
+                confidence=0.96,
+            )
+            self.add_edge(
+                shell_key,
+                beneficiary_iban,
+                "SENT_TO",
+                amount=31000 + idx * 420,
+                tx_count=1 + idx % 2,
+                first_seen_days_ago=9,
+                last_seen_days_ago=1,
+                confidence=0.95,
+            )
+            self.add_payment(
+                "sanctioned_entity_to_shell_to_beneficiary",
+                recipient_name=f"{shell_name} Final Beneficiary",
+                recipient_iban=beneficiary_iban,
+                recipient_country=beneficiary_country,
+                amount=12500 + idx * 150,
+                currency="USD",
+                expected_verdict="REVIEW",
+                ground_truth_reason="beneficiary sits downstream of a shell company ultimately owned by a sanctioned person",
+            )
+
+    def _build_clean_customer_to_shell_to_sanctioned(self) -> None:
+        """Create clean customer -> shell -> sanctioned outbound chains."""
+        for idx in range(SCENARIO_COUNTS["clean_customer_to_shell_to_sanctioned"]):
+            clean_owner_key, clean_owner_name, country = self._new_person(label="clean-shell-clean-owner")
+            clean_iban, clean_country = self._new_iban(country=country, label="clean-shell-clean-iban")
+            shell_key, shell_name, _ = self._new_company(
+                risk_level="NONE",
+                risk_source=None,
+                country=country,
+                suspicious=True,
+                label="clean-shell-company",
+            )
+            shell_iban, _ = self._new_iban(country=country, label="clean-shell-shell-iban")
+            sanction_key, sanction_name, _ = self._new_person(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                sanctioned=True,
+                country=country,
+                label="clean-shell-sanctioned-owner",
+            )
+            sanctioned_iban, _ = self._new_iban(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                country=country,
+                label="clean-shell-sanctioned-iban",
+            )
+            self.add_edge(
+                clean_owner_key,
+                clean_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=280,
+                last_seen_days_ago=3,
+                confidence=0.98,
+            )
+            self.add_edge(
+                shell_key,
+                shell_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=180,
+                last_seen_days_ago=2,
+                confidence=0.99,
+            )
+            self.add_edge(
+                sanction_key,
+                sanctioned_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=320,
+                last_seen_days_ago=6,
+                confidence=1.0,
+            )
+            self.add_edge(
+                clean_iban,
+                shell_iban,
+                "SENT_TO",
+                amount=14500 + idx * 260,
+                tx_count=2,
+                first_seen_days_ago=14,
+                last_seen_days_ago=2,
+                confidence=0.94,
+            )
+            self.add_edge(
+                shell_iban,
+                sanctioned_iban,
+                "SENT_TO",
+                amount=13800 + idx * 250,
+                tx_count=1,
+                first_seen_days_ago=12,
+                last_seen_days_ago=1,
+                confidence=0.95,
+            )
+            self.add_payment(
+                "clean_customer_to_shell_to_sanctioned",
+                recipient_name=f"{clean_owner_name} Outbound Shell Sender",
+                recipient_iban=clean_iban,
+                recipient_country=clean_country,
+                amount=5300 + idx * 80,
+                currency="EUR",
+                expected_verdict="REVIEW",
+                ground_truth_reason="beneficiary account has an outbound two-hop path to a sanctioned account through a shell company",
+            )
+
+    def _build_shell_structuring_pass_through(self) -> None:
+        """Create many-small-in, one-large-out shell pass-through behavior."""
+        for idx in range(SCENARIO_COUNTS["shell_structuring_pass_through"]):
+            shell_key, shell_name, country = self._new_company(
+                risk_level="SUSPICIOUS",
+                risk_source="synthetic:shell-structuring",
+                country=self._country(),
+                suspicious=True,
+                label="shell-structuring-company",
+            )
+            shell_iban, shell_country = self._new_iban(country=country, label="shell-structuring-iban")
+            sanction_key, sanction_name, _ = self._new_person(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                sanctioned=True,
+                country=country,
+                label="shell-structuring-sanctioned-owner",
+            )
+            sanctioned_iban, _ = self._new_iban(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                country=country,
+                label="shell-structuring-sanctioned-iban",
+            )
+            self.add_edge(
+                shell_key,
+                shell_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=90,
+                last_seen_days_ago=2,
+                confidence=0.99,
+            )
+            self.add_edge(
+                sanction_key,
+                sanctioned_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=220,
+                last_seen_days_ago=5,
+                confidence=1.0,
+            )
+            for inflow_idx in range(12):
+                feeder_key, _, feeder_country = self._new_company(label="shell-structuring-feeder")
+                feeder_iban, _ = self._new_iban(country=feeder_country, label="shell-structuring-feeder-iban")
+                self.add_edge(
+                    feeder_key,
+                    feeder_iban,
+                    "USES_ACCOUNT",
+                    amount=0,
+                    tx_count=1,
+                    first_seen_days_ago=330,
+                    last_seen_days_ago=8 + inflow_idx % 4,
+                    confidence=0.98,
+                )
+                self.add_edge(
+                    feeder_iban,
+                    shell_iban,
+                    "SENT_TO",
+                    amount=950 + inflow_idx * 35,
+                    tx_count=10 + inflow_idx,
+                    first_seen_days_ago=16,
+                    last_seen_days_ago=1 + inflow_idx % 2,
+                    confidence=0.84,
+                )
+            self.add_edge(
+                shell_iban,
+                sanctioned_iban,
+                "SENT_TO",
+                amount=18000 + idx * 300,
+                tx_count=1,
+                first_seen_days_ago=6,
+                last_seen_days_ago=1,
+                confidence=0.97,
+            )
+            self.add_payment(
+                "shell_structuring_pass_through",
+                recipient_name=shell_name,
+                recipient_iban=shell_iban,
+                recipient_country=shell_country,
+                amount=2750 + idx * 40,
+                currency="USD",
+                expected_verdict="REVIEW",
+                ground_truth_reason="shell account shows many-small-in and one-large-out pass-through behavior to a sanctioned account",
+            )
+
+    def _build_abnormal_new_counterparty_company(self) -> None:
+        """Create a low-activity company account with a new large payment to a sanctioned counterparty."""
+        for idx in range(SCENARIO_COUNTS["abnormal_new_counterparty_company"]):
+            company_key, company_name, country = self._new_company(
+                risk_level="NONE",
+                country=self._country(),
+                suspicious=False,
+                label="abnormal-company",
+            )
+            company_iban, company_country = self._new_iban(country=country, label="abnormal-company-iban")
+            sanction_key, sanction_name, _ = self._new_person(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                sanctioned=True,
+                country=country,
+                label="abnormal-sanctioned-owner",
+            )
+            sanctioned_iban, _ = self._new_iban(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                country=country,
+                label="abnormal-sanctioned-iban",
+            )
+            self.add_edge(
+                company_key,
+                company_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=24,
+                last_seen_days_ago=2,
+                confidence=0.99,
+            )
+            self.add_edge(
+                sanction_key,
+                sanctioned_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=360,
+                last_seen_days_ago=8,
+                confidence=1.0,
+            )
+            self.add_edge(
+                company_iban,
+                sanctioned_iban,
+                "SENT_TO",
+                amount=42000 + idx * 600,
+                tx_count=1,
+                first_seen_days_ago=5,
+                last_seen_days_ago=1,
+                confidence=0.98,
+            )
+            self.add_payment(
+                "abnormal_new_counterparty_company",
+                recipient_name=company_name,
+                recipient_iban=company_iban,
+                recipient_country=company_country,
+                amount=36000 + idx * 400,
+                currency="USD",
+                expected_verdict="REVIEW",
+                ground_truth_reason="large amount sent from a newly active company account to a sanctioned counterparty",
+            )
+
+    def _build_high_concentration_to_shell(self) -> None:
+        """Create concentrated sender flow into one suspicious shell account."""
+        for idx in range(SCENARIO_COUNTS["high_concentration_to_shell"]):
+            sanction_key, sanction_name, country = self._new_person(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                sanctioned=True,
+                label="concentration-sanctioned-owner",
+            )
+            source_iban, _ = self._new_iban(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                country=country,
+                label="concentration-source",
+            )
+            shell_key, shell_name, _ = self._new_company(
+                risk_level="SUSPICIOUS",
+                risk_source="synthetic:high-concentration-shell",
+                country=country,
+                suspicious=True,
+                label="concentration-shell-company",
+            )
+            shell_iban, shell_country = self._new_iban(country=country, label="concentration-shell-iban")
+            self.add_edge(
+                sanction_key,
+                source_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=260,
+                last_seen_days_ago=4,
+                confidence=1.0,
+            )
+            self.add_edge(
+                shell_key,
+                shell_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=160,
+                last_seen_days_ago=3,
+                confidence=0.99,
+            )
+            self.add_edge(
+                source_iban,
+                shell_iban,
+                "SENT_TO",
+                amount=88000 + idx * 1200,
+                tx_count=6 + idx % 3,
+                first_seen_days_ago=15,
+                last_seen_days_ago=1,
+                confidence=0.96,
+            )
+            for side_idx, side_amount in enumerate([2400, 1800, 3200]):
+                clean_owner_key, _, clean_country = self._new_person(label="concentration-side-owner")
+                clean_iban, _ = self._new_iban(country=clean_country, label="concentration-side-iban")
+                self.add_edge(
+                    clean_owner_key,
+                    clean_iban,
+                    "USES_ACCOUNT",
+                    amount=0,
+                    tx_count=1,
+                    first_seen_days_ago=330,
+                    last_seen_days_ago=5 + side_idx,
+                    confidence=0.98,
+                )
+                self.add_edge(
+                    source_iban,
+                    clean_iban,
+                    "SENT_TO",
+                    amount=side_amount + idx % 2 * 100,
+                    tx_count=1,
+                    first_seen_days_ago=18 + side_idx,
+                    last_seen_days_ago=2 + side_idx,
+                    confidence=0.77,
+                )
+            self.add_payment(
+                "high_concentration_to_shell",
+                recipient_name=shell_name,
+                recipient_iban=shell_iban,
+                recipient_country=shell_country,
+                amount=12000 + idx * 175,
+                currency="EUR",
+                expected_verdict="REVIEW",
+                ground_truth_reason="most outgoing value from a sanctioned sender concentrates into one suspicious shell account",
+            )
+
+    def _build_derived_risk_anchor_chain(self) -> None:
+        """Create a controlled 3-hop chain used only by derived-risk-anchor precompute."""
+        for idx in range(SCENARIO_COUNTS["derived_anchor_milica_to_sanctioned"]):
+            country = self._payment_country("rs")
+            milica_owner_key, _milica_name, _ = self._new_person(country=country, label="derived-milica-owner")
+            milica_iban, milica_country = self._new_iban(country=country, label="derived-milica-iban")
+            sanctioned_owner_key, sanctioned_name, _ = self._new_person(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                sanctioned=True,
+                country=country,
+                label="derived-sanctioned-owner",
+            )
+            sanctioned_iban, _ = self._new_iban(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                country=country,
+                label="derived-sanctioned-iban",
+            )
+            self.add_edge(
+                milica_owner_key,
+                milica_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=220,
+                last_seen_days_ago=2,
+                confidence=0.99,
+            )
+            self.add_edge(
+                sanctioned_owner_key,
+                sanctioned_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=360,
+                last_seen_days_ago=4,
+                confidence=1.0,
+            )
+            self.add_edge(
+                milica_iban,
+                sanctioned_iban,
+                "SENT_TO",
+                amount=26000 + idx * 300,
+                tx_count=2,
+                first_seen_days_ago=10,
+                last_seen_days_ago=1,
+                confidence=0.98,
+            )
+            self.add_payment(
+                "derived_anchor_milica_to_sanctioned",
+                recipient_name="Milica Proxy Account",
+                recipient_iban=milica_iban,
+                recipient_country=milica_country,
+                amount=5600 + idx * 75,
+                currency="EUR",
+                expected_verdict="REVIEW",
+                ground_truth_reason="Milica account is one hop outbound from a sanctioned endpoint and should become a strong derived anchor candidate",
+            )
+
+            if idx < SCENARIO_COUNTS["mateja_shell_to_derived_anchor"]:
+                mateja_company_key, mateja_company_name, _ = self._new_company(
+                    country=country,
+                    suspicious=True,
+                    label="derived-mateja-company",
+                )
+                mateja_iban, mateja_country = self._new_iban(country=country, label="derived-mateja-iban")
+                self.add_edge(
+                    mateja_company_key,
+                    mateja_iban,
+                    "USES_ACCOUNT",
+                    amount=0,
+                    tx_count=1,
+                    first_seen_days_ago=140,
+                    last_seen_days_ago=2,
+                    confidence=0.99,
+                )
+                for feeder_idx in range(10):
+                    feeder_key, _, feeder_country = self._new_company(label="derived-mateja-feeder")
+                    feeder_iban, _ = self._new_iban(country=feeder_country, label="derived-mateja-feeder-iban")
+                    self.add_edge(
+                        feeder_key,
+                        feeder_iban,
+                        "USES_ACCOUNT",
+                        amount=0,
+                        tx_count=1,
+                        first_seen_days_ago=300,
+                        last_seen_days_ago=7,
+                        confidence=0.98,
+                    )
+                    self.add_edge(
+                        feeder_iban,
+                        mateja_iban,
+                        "SENT_TO",
+                        amount=1100 + feeder_idx * 45,
+                        tx_count=12 + feeder_idx,
+                        first_seen_days_ago=18,
+                        last_seen_days_ago=1 + feeder_idx % 2,
+                        confidence=0.86,
+                    )
+                self.add_edge(
+                    mateja_iban,
+                    milica_iban,
+                    "SENT_TO",
+                    amount=21000 + idx * 280,
+                    tx_count=1 + idx % 2,
+                    first_seen_days_ago=8,
+                    last_seen_days_ago=1,
+                    confidence=0.97,
+                )
+                self.add_payment(
+                    "mateja_shell_to_derived_anchor",
+                    recipient_name=mateja_company_name,
+                    recipient_iban=mateja_iban,
+                    recipient_country=mateja_country,
+                    amount=4200 + idx * 70,
+                    currency="EUR",
+                    expected_verdict="REVIEW",
+                    ground_truth_reason="Mateja shell account is two hops outbound from a sanctioned endpoint and should become a derived-risk anchor",
+                )
+
+            if idx < SCENARIO_COUNTS["andrija_funds_derived_proxy"]:
+                andrija_owner_key, andrija_owner_name, _ = self._new_person(country=country, label="derived-andrija-owner")
+                andrija_iban, andrija_country = self._new_iban(country=country, label="derived-andrija-iban")
+                self.add_edge(
+                    andrija_owner_key,
+                    andrija_iban,
+                    "USES_ACCOUNT",
+                    amount=0,
+                    tx_count=1,
+                    first_seen_days_ago=300,
+                    last_seen_days_ago=2,
+                    confidence=0.99,
+                )
+                self.add_edge(
+                    andrija_iban,
+                    mateja_iban,
+                    "SENT_TO",
+                    amount=18500 + idx * 200,
+                    tx_count=2,
+                    first_seen_days_ago=7,
+                    last_seen_days_ago=1,
+                    confidence=0.96,
+                )
+                for small_idx in range(2):
+                    clean_key, _, clean_country = self._new_person(label="derived-andrija-side-owner")
+                    clean_iban, _ = self._new_iban(country=clean_country, label="derived-andrija-side-iban")
+                    self.add_edge(
+                        clean_key,
+                        clean_iban,
+                        "USES_ACCOUNT",
+                        amount=0,
+                        tx_count=1,
+                        first_seen_days_ago=320,
+                        last_seen_days_ago=small_idx + 2,
+                        confidence=0.98,
+                    )
+                    self.add_edge(
+                        andrija_iban,
+                        clean_iban,
+                        "SENT_TO",
+                        amount=850 + small_idx * 110,
+                        tx_count=1,
+                        first_seen_days_ago=12,
+                        last_seen_days_ago=small_idx + 2,
+                        confidence=0.78,
+                    )
+                self.add_payment(
+                    "andrija_funds_derived_proxy",
+                    recipient_name=andrija_owner_name,
+                    recipient_iban=andrija_iban,
+                    recipient_country=andrija_country,
+                    amount=3900 + idx * 55,
+                    currency="EUR",
+                    expected_verdict="REVIEW",
+                    ground_truth_reason="Andrija materially funds a shell account that is already proven to route toward a sanctioned endpoint",
+                )
+
+            if idx < SCENARIO_COUNTS["tiny_upstream_funding_suppressed"]:
+                tiny_owner_key, tiny_owner_name, _ = self._new_person(country=country, label="derived-tiny-owner")
+                tiny_iban, tiny_country = self._new_iban(country=country, label="derived-tiny-iban")
+                mateja_tiny_company_key, mateja_tiny_company_name, _ = self._new_company(
+                    country=country,
+                    suspicious=True,
+                    label="derived-tiny-mateja-company",
+                )
+                mateja_tiny_iban, _ = self._new_iban(country=country, label="derived-tiny-mateja-iban")
+                milica_tiny_owner_key, _, _ = self._new_person(country=country, label="derived-tiny-milica-owner")
+                milica_tiny_iban, _ = self._new_iban(country=country, label="derived-tiny-milica-iban")
+                sanctioned_tiny_owner_key, _, _ = self._new_person(
+                    risk_level="SANCTIONED",
+                    risk_source="synthetic:sanctions",
+                    sanctioned=True,
+                    country=country,
+                    label="derived-tiny-sanctioned-owner",
+                )
+                sanctioned_tiny_iban, _ = self._new_iban(
+                    risk_level="SANCTIONED",
+                    risk_source="synthetic:sanctions",
+                    country=country,
+                    label="derived-tiny-sanctioned-iban",
+                )
+                self.add_edge(tiny_owner_key, tiny_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=300, last_seen_days_ago=2, confidence=0.99)
+                self.add_edge(mateja_tiny_company_key, mateja_tiny_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=100, last_seen_days_ago=2, confidence=0.99)
+                self.add_edge(milica_tiny_owner_key, milica_tiny_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=200, last_seen_days_ago=2, confidence=0.99)
+                self.add_edge(sanctioned_tiny_owner_key, sanctioned_tiny_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=340, last_seen_days_ago=4, confidence=1.0)
+                self.add_edge(mateja_tiny_iban, milica_tiny_iban, "SENT_TO", amount=16000 + idx * 120, tx_count=1, first_seen_days_ago=7, last_seen_days_ago=1, confidence=0.95)
+                self.add_edge(milica_tiny_iban, sanctioned_tiny_iban, "SENT_TO", amount=15000 + idx * 110, tx_count=1, first_seen_days_ago=6, last_seen_days_ago=1, confidence=0.96)
+                self.add_edge(tiny_iban, mateja_tiny_iban, "SENT_TO", amount=35 + idx % 3, tx_count=1, first_seen_days_ago=6, last_seen_days_ago=1, confidence=0.78)
+                self.add_payment(
+                    "tiny_upstream_funding_suppressed",
+                    recipient_name=tiny_owner_name,
+                    recipient_iban=tiny_iban,
+                    recipient_country=tiny_country,
+                    amount=40 + idx,
+                    currency="EUR",
+                    expected_verdict="NO_MATCH",
+                    ground_truth_reason="Andrija-like upstream funding is too small to escalate even though the downstream shell/proxy chain reaches sanctions",
+                )
+
+            if idx < SCENARIO_COUNTS["hub_upstream_funding_suppressed"]:
+                hub_owner_key, hub_owner_name, _ = self._new_person(country=country, label="derived-hub-owner")
+                hub_sender_iban, hub_sender_country = self._new_iban(country=country, label="derived-hub-sender-iban")
+                bank_key = self.add_node(
+                    f"BANK:{self.run_tag}:derived-hub:{idx:03d}",
+                    "BANK",
+                    display_name=f"Derived Hub Bank {idx:03d}",
+                    country=country,
+                )
+                bank_hub_iban, _ = self._new_iban(country=country, label="derived-hub-bank-iban")
+                mateja_hub_company_key, _, _ = self._new_company(country=country, suspicious=True, label="derived-hub-mateja-company")
+                mateja_hub_iban, _ = self._new_iban(country=country, label="derived-hub-mateja-iban")
+                milica_hub_owner_key, _, _ = self._new_person(country=country, label="derived-hub-milica-owner")
+                milica_hub_iban, _ = self._new_iban(country=country, label="derived-hub-milica-iban")
+                sanctioned_hub_owner_key, _, _ = self._new_person(
+                    risk_level="SANCTIONED",
+                    risk_source="synthetic:sanctions",
+                    sanctioned=True,
+                    country=country,
+                    label="derived-hub-sanctioned-owner",
+                )
+                sanctioned_hub_iban, _ = self._new_iban(
+                    risk_level="SANCTIONED",
+                    risk_source="synthetic:sanctions",
+                    country=country,
+                    label="derived-hub-sanctioned-iban",
+                )
+                self.add_edge(hub_owner_key, hub_sender_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=300, last_seen_days_ago=2, confidence=0.99)
+                self.add_edge(bank_key, bank_hub_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=700, last_seen_days_ago=10, confidence=0.99)
+                self.add_edge(mateja_hub_company_key, mateja_hub_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=120, last_seen_days_ago=2, confidence=0.99)
+                self.add_edge(milica_hub_owner_key, milica_hub_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=180, last_seen_days_ago=2, confidence=0.99)
+                self.add_edge(sanctioned_hub_owner_key, sanctioned_hub_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=360, last_seen_days_ago=5, confidence=1.0)
+                self.add_edge(hub_sender_iban, bank_hub_iban, "SENT_TO", amount=21000 + idx * 220, tx_count=2, first_seen_days_ago=9, last_seen_days_ago=1, confidence=0.95)
+                self.add_edge(bank_hub_iban, mateja_hub_iban, "SENT_TO", amount=20500 + idx * 215, tx_count=2, first_seen_days_ago=8, last_seen_days_ago=1, confidence=0.95)
+                self.add_edge(mateja_hub_iban, milica_hub_iban, "SENT_TO", amount=19800 + idx * 200, tx_count=1, first_seen_days_ago=7, last_seen_days_ago=1, confidence=0.96)
+                self.add_edge(milica_hub_iban, sanctioned_hub_iban, "SENT_TO", amount=19400 + idx * 180, tx_count=1, first_seen_days_ago=6, last_seen_days_ago=1, confidence=0.97)
+                self.add_payment(
+                    "hub_upstream_funding_suppressed",
+                    recipient_name=hub_owner_name,
+                    recipient_iban=hub_sender_iban,
+                    recipient_country=hub_sender_country,
+                    amount=5100 + idx * 60,
+                    currency="EUR",
+                    expected_verdict="NO_MATCH",
+                    ground_truth_reason="upstream funding crosses a bank hub before the shell/proxy chain, so derived-risk propagation should be suppressed",
+                )
+
+            if idx < SCENARIO_COUNTS["normal_high_concentration_control_no_match"]:
+                normal_company_key, normal_company_name, country2 = self._new_company(
+                    country=self._payment_country(),
+                    suspicious=False,
+                    label="derived-normal-control-company",
+                )
+                normal_iban, normal_country = self._new_iban(country=country2, label="derived-normal-control-iban")
+                clean_sender_key, _, clean_sender_country = self._new_person(label="derived-normal-control-sender")
+                clean_sender_iban, _ = self._new_iban(country=clean_sender_country, label="derived-normal-control-sender-iban")
+                self.add_edge(normal_company_key, normal_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=220, last_seen_days_ago=3, confidence=0.99)
+                self.add_edge(clean_sender_key, clean_sender_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=300, last_seen_days_ago=3, confidence=0.99)
+                self.add_edge(clean_sender_iban, normal_iban, "SENT_TO", amount=76000 + idx * 500, tx_count=5, first_seen_days_ago=12, last_seen_days_ago=1, confidence=0.96)
+                for ctrl_idx in range(2):
+                    side_owner_key, _, side_country = self._new_person(label="derived-normal-control-side-owner")
+                    side_iban, _ = self._new_iban(country=side_country, label="derived-normal-control-side-iban")
+                    self.add_edge(side_owner_key, side_iban, "USES_ACCOUNT", amount=0, tx_count=1, first_seen_days_ago=320, last_seen_days_ago=4, confidence=0.98)
+                    self.add_edge(clean_sender_iban, side_iban, "SENT_TO", amount=1400 + ctrl_idx * 100, tx_count=1, first_seen_days_ago=14, last_seen_days_ago=2, confidence=0.8)
+                self.add_payment(
+                    "normal_high_concentration_control_no_match",
+                    recipient_name=normal_company_name,
+                    recipient_iban=normal_iban,
+                    recipient_country=normal_country,
+                    amount=7200 + idx * 90,
+                    currency="EUR",
+                    expected_verdict="NO_MATCH",
+                    ground_truth_reason="high concentration alone without a sanctions path should not create a sanctions-evasion review",
+                )
+
     def _build_old_tiny_exposure(self) -> None:
+        """Create stale dust-like flows that should disappear during precompute."""
         for idx in range(SCENARIO_COUNTS["old_tiny_exposure"]):
             sanction_key, sanction_name, country = self._new_person(
                 risk_level="SANCTIONED",
@@ -549,6 +1351,84 @@ class SyntheticGraphBuilder:
                 ground_truth_reason="only link is an old tiny transfer from a sanctioned source; exposure is stale and weak",
             )
 
+    def _build_shared_hub_false_positive_prevented(self) -> None:
+        """Create a shared-hub pattern that must not contaminate a clean sender."""
+        for idx in range(SCENARIO_COUNTS["shared_hub_false_positive_prevented"]):
+            sanction_key, sanction_name, country = self._new_person(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                sanctioned=True,
+                label="shared-hub-source",
+            )
+            source_iban, _ = self._new_iban(
+                risk_level="SANCTIONED",
+                risk_source="synthetic:sanctions",
+                country=country,
+                label="shared-hub-risky",
+            )
+            hub_iban, hub_country = self._new_iban(
+                country=country,
+                label="shared-hub-node",
+            )
+            clean_owner_key, clean_owner_name, _ = self._new_person(
+                country=country,
+                label="shared-hub-clean-owner",
+            )
+            clean_iban, clean_country = self._new_iban(
+                country=hub_country,
+                label="shared-hub-clean",
+            )
+            self.add_edge(
+                sanction_key,
+                source_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=120,
+                last_seen_days_ago=10,
+                confidence=1.0,
+            )
+            self.add_edge(
+                clean_owner_key,
+                clean_iban,
+                "USES_ACCOUNT",
+                amount=0,
+                tx_count=1,
+                first_seen_days_ago=280,
+                last_seen_days_ago=4,
+                confidence=0.98,
+            )
+            self.add_edge(
+                source_iban,
+                hub_iban,
+                "SENT_TO",
+                amount=42000 + idx * 350,
+                tx_count=6 + idx % 3,
+                first_seen_days_ago=55,
+                last_seen_days_ago=3,
+                confidence=0.93,
+            )
+            self.add_edge(
+                clean_iban,
+                hub_iban,
+                "SENT_TO",
+                amount=1800 + idx * 45,
+                tx_count=2 + idx % 2,
+                first_seen_days_ago=25,
+                last_seen_days_ago=2,
+                confidence=0.91,
+            )
+            self.add_payment(
+                "shared_hub_false_positive_prevented",
+                recipient_name=f"{clean_owner_name} Shared Hub Sender",
+                recipient_iban=clean_iban,
+                recipient_country=clean_country,
+                amount=1600 + idx * 30,
+                currency="EUR",
+                expected_verdict="NO_MATCH",
+                ground_truth_reason="clean account shares a downstream hub with a sanctioned sender but should not inherit exposure via reverse traversal",
+            )
+
     def _build_clean_common_name(self) -> None:
         for idx in range(SCENARIO_COUNTS["clean_common_name"]):
             owner_key, _, country = self._new_person(label="common-clean")
@@ -578,6 +1458,7 @@ class SyntheticGraphBuilder:
             )
 
     def _build_shell_company(self) -> None:
+        """Create suspicious shell-company ownership chains ending at an account."""
         for idx in range(SCENARIO_COUNTS["shell_company"]):
             sanction_key, sanction_name, country = self._new_person(
                 risk_level="SANCTIONED",
@@ -628,6 +1509,7 @@ class SyntheticGraphBuilder:
             )
 
     def _build_high_volume_proxy(self) -> None:
+        """Create proxy-routing cases where flow concentration matters materially."""
         for idx in range(SCENARIO_COUNTS["high_volume_proxy"]):
             sanction_key, sanction_name, country = self._new_person(
                 risk_level="SANCTIONED",

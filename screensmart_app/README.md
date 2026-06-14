@@ -17,7 +17,6 @@ structured audit log is written to `screensmart_app/logs/`.
 ## Run locally (PowerShell, from the repo root)
 ```powershell
 $env:PYTHONIOENCODING='utf-8'; $env:PYTHONUNBUFFERED='1'
-$env:PYTHONPATH='..\screensmart_app\src'      # or the absolute path to screensmart_app\src
 $vpy='..\.venv\Scripts\python.exe'; $src='.\screensmart_app\src'
 & $vpy $src\download_data.py          # pull all sanctions datasets
 & $vpy $src\explore.py                # profile + charts 01–07
