@@ -128,6 +128,12 @@ def path_reaches_sanctioned(best_path: list[dict]) -> bool:
     return any(str(node.get("risk_level", "")).upper() == "SANCTIONED" for node in best_path)
 
 
+def path_is_override_eligible(best_path: list[dict]) -> bool:
+    if not best_path:
+        return False
+    return all(bool(node.get("override_allowed", True)) for node in best_path[1:])
+
+
 def path_has_meaningful_signal(best_path: list[dict], *, today: dt.date | None = None) -> bool:
     today = today or dt.date.today()
     for node in best_path[1:]:
@@ -177,6 +183,6 @@ def exposure_verdict(
         return "NO_MATCH"
     if score >= review_threshold:
         return "REVIEW"
-    if best_depth is not None and best_depth <= 2 and path_reaches_sanctioned(path):
+    if best_depth is not None and best_depth <= 2 and path_reaches_sanctioned(path) and path_is_override_eligible(path):
         return "REVIEW"
     return "NO_MATCH"

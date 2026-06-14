@@ -1,7 +1,7 @@
-"""Offline exposure precompute over the aggregated counterparty graph.
+"""Offline crypto wallet exposure precompute over the aggregated graph.
 
 Run:
-    python -m screensmart.exposure.precompute --max-depth 2 --top-k 20 --reset
+    python -m crypto_exposure_graph.exposure.precompute --max-depth 2 --top-k 20 --reset
 """
 
 from __future__ import annotations
@@ -17,16 +17,18 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..db.database import get_engine
-from ..db.schema import exposure_index, graph_edges, graph_nodes
+from ..db.schema import crypto_exposure_index, crypto_graph_edges, crypto_graph_nodes
 from .policy import build_adjacency_entries, is_service_boundary_node
 from .scoring import (
-    amount_weight,
+    average_transaction_value,
     concentration_score,
+    crypto_materiality_weight,
     edge_score,
     exposure_verdict,
-    flow_materiality_weight,
+    FLOW_EDGE_TYPES,
     hop_decay,
-    ignore_weak_edge,
+    hub_penalty,
+    ignore_isolated_dust_edge,
     path_reaches_sanctioned,
     time_decay,
     source_risk,
@@ -47,7 +49,6 @@ class SearchStats:
     max_depth_reached: int = 0
     expanded_nodes: int = 0
     expanded_neighbors: int = 0
-    hub_nodes_suppressed: int = 0
     derived_anchor_candidates: int = 0
     derived_anchor_rows: int = 0
     derived_anchor_suppressed_rows: int = 0
@@ -64,24 +65,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--min-score", type=float, default=0.03)
-    parser.add_argument("--hub-degree-threshold", type=int, default=200)
     parser.add_argument("--reset", action="store_true")
     return parser.parse_args()
 
 
 def load_graph(engine, *, today: dt.date) -> tuple[dict[str, dict], dict[str, list[dict]], dict[str, int]]:
-    """Load nodes plus a scored adjacency list for offline expansion.
-
-    The loader enriches raw `graph_edges` with derived fields needed later by the
-    propagation algorithm:
-
-    - sender/receiver concentration for `SENT_TO`
-    - combined `flow_materiality_weight`
-    - final per-edge score used during traversal
-
-    Adjacency is built through the propagation policy rather than by blindly
-    mirroring every edge in reverse.
-    """
+    """Load nodes plus a scored adjacency list for offline expansion."""
     nodes: dict[str, dict] = {}
     adjacency: dict[str, list[dict]] = collections.defaultdict(list)
     debug_stats = {
@@ -90,83 +79,92 @@ def load_graph(engine, *, today: dt.date) -> tuple[dict[str, dict], dict[str, li
         "reverse_edges_skipped_due_to_directionality": 0,
     }
     with engine.connect() as conn:
-        node_rows = conn.execute(
+        for row in conn.execute(
             sa.select(
-                graph_nodes.c.node_key,
-                graph_nodes.c.node_type,
-                graph_nodes.c.display_name,
-                graph_nodes.c.country,
-                graph_nodes.c.risk_level,
-                graph_nodes.c.risk_source,
+                crypto_graph_nodes.c.node_key,
+                crypto_graph_nodes.c.chain,
+                crypto_graph_nodes.c.address,
+                crypto_graph_nodes.c.node_type,
+                crypto_graph_nodes.c.display_name,
+                crypto_graph_nodes.c.risk_level,
+                crypto_graph_nodes.c.risk_source,
             )
-        )
-        for row in node_rows:
+        ):
             nodes[row.node_key] = {
                 "node_key": row.node_key,
+                "chain": row.chain,
+                "address": row.address,
                 "node_type": row.node_type,
                 "display_name": row.display_name,
-                "country": row.country,
                 "risk_level": row.risk_level,
                 "risk_source": row.risk_source,
             }
 
         edge_rows = list(conn.execute(
             sa.select(
-                graph_edges.c.from_node_key,
-                graph_edges.c.to_node_key,
-                graph_edges.c.edge_type,
-                graph_edges.c.total_amount,
-                graph_edges.c.transaction_count,
-                graph_edges.c.first_seen,
-                graph_edges.c.last_seen,
-                graph_edges.c.confidence,
+                crypto_graph_edges.c.from_node_key,
+                crypto_graph_edges.c.to_node_key,
+                crypto_graph_edges.c.edge_type,
+                crypto_graph_edges.c.total_usd_value,
+                crypto_graph_edges.c.transaction_count,
+                crypto_graph_edges.c.first_seen,
+                crypto_graph_edges.c.last_seen,
+                crypto_graph_edges.c.confidence,
             )
         ))
-        total_outgoing_amount_by_node: collections.defaultdict[str, float] = collections.defaultdict(float)
-        total_incoming_amount_by_node: collections.defaultdict[str, float] = collections.defaultdict(float)
+        total_outgoing_value_by_node: collections.defaultdict[str, float] = collections.defaultdict(float)
+        total_incoming_value_by_node: collections.defaultdict[str, float] = collections.defaultdict(float)
+        node_degree: collections.Counter[str] = collections.Counter()
         for row in edge_rows:
-            if row.edge_type != "SENT_TO":
+            node_degree[row.from_node_key] += 1
+            node_degree[row.to_node_key] += 1
+            if row.edge_type not in FLOW_EDGE_TYPES:
                 continue
-            amount = float(row.total_amount or 0.0)
-            total_outgoing_amount_by_node[row.from_node_key] += amount
-            total_incoming_amount_by_node[row.to_node_key] += amount
+            value = float(row.total_usd_value or 0.0)
+            total_outgoing_value_by_node[row.from_node_key] += value
+            total_incoming_value_by_node[row.to_node_key] += value
 
         for row in edge_rows:
             debug_stats["edges_considered"] += 1
-            amount = float(row.total_amount or 0.0)
-            outgoing_total = total_outgoing_amount_by_node[row.from_node_key]
-            incoming_total = total_incoming_amount_by_node[row.to_node_key]
+            value = float(row.total_usd_value or 0.0)
+            outgoing_total = total_outgoing_value_by_node[row.from_node_key]
+            incoming_total = total_incoming_value_by_node[row.to_node_key]
             outgoing_concentration = (
-                amount / outgoing_total
-                if row.edge_type == "SENT_TO" and outgoing_total > 0.0
+                value / outgoing_total
+                if row.edge_type in FLOW_EDGE_TYPES and outgoing_total > 0.0
                 else 0.0
             )
             incoming_concentration = (
-                amount / incoming_total
-                if row.edge_type == "SENT_TO" and incoming_total > 0.0
+                value / incoming_total
+                if row.edge_type in FLOW_EDGE_TYPES and incoming_total > 0.0
                 else 0.0
             )
             flow_concentration = max(outgoing_concentration, incoming_concentration)
             base = {
                 "edge_type": row.edge_type,
-                "total_amount": row.total_amount,
+                "total_usd_value": row.total_usd_value,
                 "transaction_count": row.transaction_count,
                 "first_seen": row.first_seen,
                 "last_seen": row.last_seen,
                 "confidence": float(row.confidence) if row.confidence is not None else 1.0,
                 "from_node_key": row.from_node_key,
                 "to_node_key": row.to_node_key,
+                "from_node_type": nodes[row.from_node_key]["node_type"],
+                "to_node_type": nodes[row.to_node_key]["node_type"],
+                "from_node_degree": int(node_degree[row.from_node_key]),
+                "to_node_degree": int(node_degree[row.to_node_key]),
                 "outgoing_concentration": outgoing_concentration,
                 "incoming_concentration": incoming_concentration,
                 "flow_concentration": flow_concentration,
             }
-            base["flow_materiality_weight"] = flow_materiality_weight(
+            base["average_transaction_value"] = average_transaction_value(base)
+            base["crypto_materiality_weight"] = crypto_materiality_weight(
                 row.edge_type,
-                row.total_amount,
+                row.total_usd_value,
                 flow_concentration=flow_concentration,
             )
-            base["absolute_amount_weight"] = amount_weight(row.total_amount)
             base["concentration_score"] = concentration_score(flow_concentration)
+            base["hub_penalty"] = hub_penalty(base)
             score = edge_score(base, today=today)
             base["edge_score"] = score
             entries, skipped_reverse = build_adjacency_entries(base)
@@ -181,12 +179,12 @@ def load_graph(engine, *, today: dt.date) -> tuple[dict[str, dict], dict[str, li
     return nodes, adjacency, debug_stats
 
 
-def is_direct_sanctioned_account(node: dict, source_key: str, depth: int) -> bool:
+def is_direct_sanctioned_wallet(node: dict, source_key: str, depth: int) -> bool:
     return (
         depth == 0
         and node["node_key"] == source_key
         and node.get("risk_level") == "SANCTIONED"
-        and node.get("node_type") in {"IBAN", "ACCOUNT", "WALLET"}
+        and node.get("node_type") == "WALLET"
     )
 
 
@@ -195,7 +193,7 @@ def build_path_json(
     path_nodes: tuple[str, ...],
     path_edges: tuple[dict, ...],
 ) -> list[dict]:
-    """Serialize the winning path into the JSON shape stored in `exposure_index`."""
+    """Serialize the winning path into the JSON shape stored in `crypto_exposure_index`."""
     rev_nodes = list(reversed(path_nodes))
     rev_edges = list(reversed(path_edges))
     out: list[dict] = []
@@ -203,6 +201,8 @@ def build_path_json(
         meta = nodes[node_key]
         entry = {
             "node_key": node_key,
+            "chain": meta["chain"],
+            "address": meta["address"],
             "node_type": meta["node_type"],
         }
         if idx == 0:
@@ -212,25 +212,24 @@ def build_path_json(
             continue
         edge = rev_edges[idx - 1]
         entry["edge_type"] = edge["edge_type"]
-        entry["amount"] = float(edge["total_amount"] or 0.0)
+        entry["total_usd_value"] = float(edge["total_usd_value"] or 0.0)
         entry["transaction_count"] = int(edge["transaction_count"] or 0)
+        entry["average_transaction_value"] = round(float(edge.get("average_transaction_value") or 0.0), 6)
+        entry["outgoing_concentration"] = round(float(edge.get("outgoing_concentration") or 0.0), 6)
+        entry["incoming_concentration"] = round(float(edge.get("incoming_concentration") or 0.0), 6)
+        entry["flow_concentration"] = round(float(edge.get("flow_concentration") or 0.0), 6)
+        entry["crypto_materiality_weight"] = round(float(edge.get("crypto_materiality_weight") or 0.0), 6)
+        entry["concentration_score"] = round(float(edge.get("concentration_score") or 0.0), 6)
+        entry["override_allowed"] = bool(edge.get("override_allowed", True))
+        entry["semantic_flow"] = str(edge.get("semantic_flow") or "")
+        entry["directional_multiplier"] = round(float(edge.get("directional_multiplier") or 1.0), 6)
+        entry["hub_penalty"] = round(float(edge.get("hub_penalty") or 0.0), 6)
         entry["confidence"] = float(edge["confidence"] or 1.0)
         entry["edge_from"] = edge["from_node_key"]
         entry["edge_to"] = edge["to_node_key"]
         entry["edge_direction"] = edge["path_direction"]
-        entry["override_allowed"] = bool(edge.get("override_allowed", True))
-        entry["semantic_flow"] = str(edge.get("semantic_flow") or "")
-        entry["directional_multiplier"] = round(float(edge.get("directional_multiplier") or 1.0), 6)
         entry["first_seen"] = edge["first_seen"].isoformat() if edge.get("first_seen") else None
         entry["last_seen"] = edge["last_seen"].isoformat() if edge.get("last_seen") else None
-        if edge.get("outgoing_concentration") is not None:
-            entry["outgoing_concentration"] = round(float(edge["outgoing_concentration"]), 6)
-        if edge.get("incoming_concentration") is not None:
-            entry["incoming_concentration"] = round(float(edge["incoming_concentration"]), 6)
-        if edge.get("flow_concentration") is not None:
-            entry["flow_concentration"] = round(float(edge["flow_concentration"]), 6)
-        if edge.get("flow_materiality_weight") is not None:
-            entry["flow_materiality_weight"] = round(float(edge["flow_materiality_weight"]), 6)
         if idx == len(rev_nodes) - 1 and meta.get("risk_level") not in (None, "NONE"):
             entry["risk_level"] = meta["risk_level"]
         out.append(entry)
@@ -245,9 +244,10 @@ def build_reason(
     direct_hit: bool,
     path_edges: tuple[dict, ...],
 ) -> str:
+    """Build the stored offline explanation string."""
     verdict = exposure_verdict(score, direct_hit=direct_hit)
     if direct_hit:
-        return "direct sanctioned account anchor"
+        return "direct sanctioned wallet anchor"
     if depth == 0:
         return f"{source_node['risk_level'].lower()} anchor node"
     hops = " -> ".join(edge["edge_type"] for edge in path_edges) if path_edges else "anchor"
@@ -262,61 +262,65 @@ def classify_derived_anchor(
     nodes: dict[str, dict],
     *,
     today: dt.date,
-    hub_degree_threshold: int,
     adjacency: dict[str, list[dict]],
 ) -> dict | None:
     if record["depth"] <= 0:
         return None
     node = nodes[record["node_key"]]
-    if str(node.get("node_type") or "").upper() == "BANK":
+    if str(node.get("node_type") or "").upper() != "WALLET":
         return None
-    if len(adjacency.get(record["node_key"], [])) > hub_degree_threshold:
+    if is_service_boundary_node(node):
         return None
     path_edges = list(record["path_edges"])
     if not path_edges:
         return None
-    if any(str(edge.get("edge_type") or "").upper() == "SHARED_IDENTIFIER" for edge in path_edges):
+    if any(ignore_isolated_dust_edge(edge) for edge in path_edges):
         return None
+    if any(
+        str(nodes.get(edge.get("to_node_key"), {}).get("node_type") or "").upper() in {"EXCHANGE_HOT_WALLET", "BRIDGE", "MIXER", "SMART_CONTRACT"}
+        or str(nodes.get(edge.get("from_node_key"), {}).get("node_type") or "").upper() in {"EXCHANGE_HOT_WALLET", "BRIDGE", "MIXER", "SMART_CONTRACT"}
+        for edge in path_edges
+    ):
+        return None
+
     source_node = nodes[record["source_risk_node"]]
-    if str(source_node.get("risk_level") or "").upper() != "SANCTIONED":
-        return None
+    source_risk_level = str(source_node.get("risk_level") or "NONE").upper()
     semantics = [str(edge.get("semantic_flow") or "") for edge in path_edges]
     all_outbound = bool(semantics) and all(item == "outbound_to_anchor" for item in semantics)
     all_inbound = bool(semantics) and all(item == "inbound_from_anchor" for item in semantics)
-    material_recent = any(
-        float(edge.get("total_amount") or 0.0) >= 1000.0
+    recent_material = any(
+        float(edge.get("total_usd_value") or 0.0) >= 1000.0
         and time_decay(edge.get("last_seen"), today=today) >= 0.8
         for edge in path_edges
     )
     strong_concentration = any(float(edge.get("flow_concentration") or 0.0) >= 0.70 for edge in path_edges)
-    proxy_pattern = len(path_edges) >= 2 or any(
-        str(edge.get("edge_type") or "").upper() in {"USES_ACCOUNT", "OWNS"}
+    structuring = any(
+        int(edge.get("transaction_count") or 0) >= 100 and float(edge.get("total_usd_value") or 0.0) >= 1000.0
         for edge in path_edges
     )
-
-    if all_outbound and record["depth"] == 1:
+    if all_outbound and path_reaches_sanctioned(build_path_json(nodes, record["path_nodes"], record["path_edges"])) and record["depth"] == 1:
         return {
             "reason_code": "OUTBOUND_1_HOP_TO_SANCTIONED",
             "weight": 0.70,
-            "explanation": "Direct outbound payment path to a sanctioned account created a strong derived anchor.",
+            "explanation": "Direct outbound crypto flow to a sanctioned wallet created a strong derived anchor.",
         }
-    if all_outbound and record["depth"] == 2:
+    if all_outbound and path_reaches_sanctioned(build_path_json(nodes, record["path_nodes"], record["path_edges"])) and record["depth"] == 2:
         return {
             "reason_code": "OUTBOUND_2_HOP_TO_SANCTIONED",
             "weight": 0.55,
-            "explanation": "Two-hop outbound payment path to a sanctioned account created a medium-strength derived anchor.",
+            "explanation": "Two-hop outbound crypto flow to a sanctioned wallet created a medium-strength derived anchor.",
         }
-    if all_inbound and material_recent:
+    if all_inbound and recent_material and source_risk_level in {"SANCTIONED", "RANSOMWARE", "SCAM", "HACK_PROCEEDS"}:
         return {
             "reason_code": "INBOUND_FROM_SANCTIONED",
             "weight": 0.55,
-            "explanation": "Recent material inbound flow from a sanctioned account created a medium-strength derived anchor.",
+            "explanation": "Recent material inbound crypto flow from a high-risk source created a medium-strength derived anchor.",
         }
-    if material_recent and proxy_pattern and strong_concentration:
+    if recent_material and (strong_concentration or structuring) and source_risk_level in {"SANCTIONED", "RANSOMWARE", "SCAM", "HACK_PROCEEDS", "SUSPICIOUS"}:
         return {
             "reason_code": "PROXY_ACCOUNT_BEHAVIOR",
             "weight": 0.35,
-            "explanation": "Proxy/pass-through behavior with sanctioned connectivity created a low-strength derived anchor.",
+            "explanation": "Recent concentrated or structured crypto routing near a risky source created a low-strength derived anchor.",
         }
     return None
 
@@ -330,42 +334,50 @@ def build_derived_best_path(
     derived_anchor_best_path: list[dict],
     suppression_reason: str | None,
 ) -> list[dict]:
-    target_meta = nodes[funder_key]
+    funder_meta = nodes[funder_key]
     anchor_meta = nodes[upstream_edge["to_node_key"]]
     out: list[dict] = [
         {
             "node_key": funder_key,
-            "node_type": target_meta["node_type"],
+            "chain": funder_meta["chain"],
+            "address": funder_meta["address"],
+            "node_type": funder_meta["node_type"],
         }
     ]
-    anchor_entry = {
-        "node_key": upstream_edge["to_node_key"],
-        "node_type": anchor_meta["node_type"],
-        "edge_type": upstream_edge["edge_type"],
-        "amount": float(upstream_edge["total_amount"] or 0.0),
-        "transaction_count": int(upstream_edge["transaction_count"] or 0),
-        "confidence": float(upstream_edge["confidence"] or 1.0),
-        "edge_from": upstream_edge["from_node_key"],
-        "edge_to": upstream_edge["to_node_key"],
-        "edge_direction": upstream_edge["path_direction"],
-        "override_allowed": bool(upstream_edge.get("override_allowed", True)),
-        "semantic_flow": str(upstream_edge.get("semantic_flow") or ""),
-        "directional_multiplier": round(float(upstream_edge.get("directional_multiplier") or 1.0), 6),
-        "first_seen": upstream_edge["first_seen"].isoformat() if upstream_edge.get("first_seen") else None,
-        "last_seen": upstream_edge["last_seen"].isoformat() if upstream_edge.get("last_seen") else None,
-        "flow_concentration": round(float(upstream_edge.get("flow_concentration") or 0.0), 6),
-        "incoming_concentration": round(float(upstream_edge.get("incoming_concentration") or 0.0), 6),
-        "outgoing_concentration": round(float(upstream_edge.get("outgoing_concentration") or 0.0), 6),
-        "flow_materiality_weight": round(float(upstream_edge.get("flow_materiality_weight") or 0.0), 6),
-        "derived_anchor": True,
-        "derived_anchor_score": round(float(derived_anchor_meta["weight"]), 4),
-        "derived_anchor_reason_code": derived_anchor_meta["reason_code"],
-        "derived_anchor_explanation": derived_anchor_meta["explanation"],
-        "derived_anchor_original_score": round(float(derived_anchor_meta["original_score"]), 4),
-        "derived_anchor_node": upstream_edge["to_node_key"],
-        "derived_suppression_reason": suppression_reason,
-    }
-    out.append(anchor_entry)
+    out.append(
+        {
+            "node_key": upstream_edge["to_node_key"],
+            "chain": anchor_meta["chain"],
+            "address": anchor_meta["address"],
+            "node_type": anchor_meta["node_type"],
+            "edge_type": upstream_edge["edge_type"],
+            "total_usd_value": float(upstream_edge["total_usd_value"] or 0.0),
+            "transaction_count": int(upstream_edge["transaction_count"] or 0),
+            "average_transaction_value": round(float(upstream_edge.get("average_transaction_value") or 0.0), 6),
+            "outgoing_concentration": round(float(upstream_edge.get("outgoing_concentration") or 0.0), 6),
+            "incoming_concentration": round(float(upstream_edge.get("incoming_concentration") or 0.0), 6),
+            "flow_concentration": round(float(upstream_edge.get("flow_concentration") or 0.0), 6),
+            "crypto_materiality_weight": round(float(upstream_edge.get("crypto_materiality_weight") or 0.0), 6),
+            "concentration_score": round(float(upstream_edge.get("concentration_score") or 0.0), 6),
+            "override_allowed": bool(upstream_edge.get("override_allowed", True)),
+            "semantic_flow": str(upstream_edge.get("semantic_flow") or ""),
+            "directional_multiplier": round(float(upstream_edge.get("directional_multiplier") or 1.0), 6),
+            "hub_penalty": round(float(upstream_edge.get("hub_penalty") or 0.0), 6),
+            "confidence": float(upstream_edge.get("confidence") or 1.0),
+            "edge_from": upstream_edge["from_node_key"],
+            "edge_to": upstream_edge["to_node_key"],
+            "edge_direction": upstream_edge["path_direction"],
+            "first_seen": upstream_edge["first_seen"].isoformat() if upstream_edge.get("first_seen") else None,
+            "last_seen": upstream_edge["last_seen"].isoformat() if upstream_edge.get("last_seen") else None,
+            "derived_anchor": True,
+            "derived_anchor_score": round(float(derived_anchor_meta["weight"]), 4),
+            "derived_anchor_reason_code": derived_anchor_meta["reason_code"],
+            "derived_anchor_explanation": derived_anchor_meta["explanation"],
+            "derived_anchor_original_score": round(float(derived_anchor_meta["original_score"]), 4),
+            "derived_anchor_node": upstream_edge["to_node_key"],
+            "derived_suppression_reason": suppression_reason,
+        }
+    )
     out.extend(derived_anchor_best_path[1:])
     return out
 
@@ -377,45 +389,39 @@ def compute_derived_anchor_rows(
     adjacency: dict[str, list[dict]],
     *,
     today: dt.date,
-    hub_degree_threshold: int,
     stats: SearchStats,
 ) -> list[dict]:
     rows: list[dict] = []
     for node_key, record in primary_results.items():
-        derived_meta = classify_derived_anchor(
-            record,
-            nodes,
-            today=today,
-            hub_degree_threshold=hub_degree_threshold,
-            adjacency=adjacency,
-        )
+        derived_meta = classify_derived_anchor(record, nodes, today=today, adjacency=adjacency)
         if derived_meta is None:
             continue
         stats.derived_anchor_candidates += 1
         derived_meta["original_score"] = record["score"]
         derived_anchor_best_path = primary_rows_by_key[node_key]["best_path"]
         for edge in adjacency.get(node_key, []):
-            if str(edge.get("edge_type") or "").upper() != "SENT_TO":
-                continue
             if str(edge.get("path_direction") or "") != "reverse":
+                continue
+            if str(edge.get("edge_type") or "").upper() not in {"TRANSFERRED_TO", "BRIDGED_TO"}:
                 continue
             funder_key = edge["neighbor"]
             funder_node = nodes[funder_key]
             if funder_key in record["path_nodes"]:
                 continue
             suppression_reason = None
-            if str(funder_node.get("node_type") or "").upper() == "BANK":
-                suppression_reason = "BANK_HUB_BOUNDARY"
-            if len(adjacency.get(funder_key, [])) > hub_degree_threshold:
-                suppression_reason = suppression_reason or "HUB_DEGREE_SUPPRESSION"
-            amount = float(edge.get("total_amount") or 0.0)
+            if str(funder_node.get("node_type") or "").upper() != "WALLET":
+                suppression_reason = "NON_WALLET_UPSTREAM"
+            elif is_service_boundary_node(funder_node):
+                suppression_reason = "SERVICE_BOUNDARY"
+            elif ignore_isolated_dust_edge(edge):
+                suppression_reason = "DUST_EDGE"
+            amount = float(edge.get("total_usd_value") or 0.0)
             recency = time_decay(edge.get("last_seen"), today=today)
-            anchor_side_concentration = float(edge.get("incoming_concentration") or 0.0)
-            pattern_suspicious = int(edge.get("transaction_count") or 0) >= 100
+            incoming_concentration = float(edge.get("incoming_concentration") or 0.0)
+            patterned = int(edge.get("transaction_count") or 0) >= 100
             material = amount >= 1000.0 and recency >= 0.8
-            concentrated_or_patterned = anchor_side_concentration >= 0.50 or pattern_suspicious
+            concentrated_or_patterned = incoming_concentration >= 0.50 or patterned
             strong_anchor = float(derived_meta["weight"]) >= 0.55
-
             if not material:
                 suppression_reason = suppression_reason or "LOW_MATERIALITY_OR_STALE"
             if not concentrated_or_patterned:
@@ -437,38 +443,25 @@ def compute_derived_anchor_rows(
                 derived_anchor_best_path=derived_anchor_best_path,
                 suppression_reason=suppression_reason,
             )
+            row = {
+                "node_key": funder_key,
+                "exposure_score": round(score if suppression_reason is None else min(score, 0.029), 4),
+                "best_depth": len(best_path) - 1,
+                "best_path": best_path,
+                "source_risk_node": record["source_risk_node"],
+                "reason": (
+                    f"derived crypto proxy funding from {funder_key} into {node_key} "
+                    f"({derived_meta['reason_code']}) score {score:.3f}"
+                    if suppression_reason is None
+                    else f"derived crypto proxy funding suppressed for {funder_key} into {node_key} because {suppression_reason.lower()}"
+                ),
+                "computed_at": dt.datetime.combine(today, dt.time(11, 5)),
+            }
             if suppression_reason is None:
                 stats.derived_anchor_rows += 1
-                rows.append(
-                    {
-                        "node_key": funder_key,
-                        "exposure_score": round(score, 4),
-                        "best_depth": len(best_path) - 1,
-                        "best_path": best_path,
-                        "source_risk_node": record["source_risk_node"],
-                        "reason": (
-                            f"derived proxy funding from {funder_key} into {node_key} "
-                            f"({derived_meta['reason_code']}) score {score:.3f}"
-                        ),
-                        "computed_at": dt.datetime.combine(today, dt.time(11, 5)),
-                    }
-                )
             else:
                 stats.derived_anchor_suppressed_rows += 1
-                rows.append(
-                    {
-                        "node_key": funder_key,
-                        "exposure_score": round(min(score, 0.029), 4),
-                        "best_depth": len(best_path) - 1,
-                        "best_path": best_path,
-                        "source_risk_node": record["source_risk_node"],
-                        "reason": (
-                            f"derived proxy funding suppressed for {funder_key} into {node_key} "
-                            f"because {suppression_reason.lower()}"
-                        ),
-                        "computed_at": dt.datetime.combine(today, dt.time(11, 5)),
-                    }
-                )
+            rows.append(row)
     return rows
 
 
@@ -479,28 +472,13 @@ def compute_exposure(
     max_depth: int,
     top_k: int,
     min_score: float,
-    hub_degree_threshold: int,
     today: dt.date,
 ) -> tuple[list[dict], SearchStats]:
-    """Propagate exposure outward from all risky anchors and keep the best path.
-
-    High-level flow:
-
-    1. Seed the priority queue with every `SANCTIONED` or `SUSPICIOUS` node.
-    2. Expand outward through the strongest candidate edges first.
-    3. Apply weak-edge pruning, hop decay, and score multiplication.
-    4. Keep only the best-scoring explanation per reached node.
-    5. Persist that best score, depth, source anchor, and full path into
-       `exposure_index`.
-
-    This is intentionally an offline job. Runtime lookup never repeats this work.
-    """
+    """Propagate exposure from all risky anchors and keep one best path per node."""
     anchors = [node for node in nodes.values() if source_risk(node.get("risk_level")) > 0.0]
     stats = SearchStats(risk_anchors=len(anchors))
-    # One node keeps only one "winning" explanation: the highest exposure score seen.
     best_score_by_node: dict[str, float] = {}
     results: dict[str, dict] = {}
-    suppressed_hubs: set[str] = set()
     queue: list[tuple[float, int, str, int, float, tuple[str, ...], tuple[dict, ...], str]] = []
     seq = itertools.count()
 
@@ -518,10 +496,7 @@ def compute_exposure(
             "path_edges": (),
             "source_risk_node": key,
         }
-        heapq.heappush(
-            queue,
-            (-score, next(seq), key, 0, score, (key,), (), key),
-        )
+        heapq.heappush(queue, (-score, next(seq), key, 0, score, (key,), (), key))
 
     while queue:
         _neg_score, _n, node_key, depth, current_score, path_nodes, path_edges, source_key = heapq.heappop(queue)
@@ -534,16 +509,9 @@ def compute_exposure(
             continue
 
         neighbors = adjacency.get(node_key, [])
-        if len(neighbors) > hub_degree_threshold:
-            suppressed_hubs.add(node_key)
-            continue
-
         candidate_edges = neighbors[:top_k]
         stats.top_k_truncated_edges += max(0, len(neighbors) - len(candidate_edges))
-        filtered_edges = [
-            edge for edge in candidate_edges
-            if not ignore_weak_edge(edge, today=today)
-        ]
+        filtered_edges = [edge for edge in candidate_edges if not ignore_isolated_dust_edge(edge)]
         stats.expanded_nodes += 1
         stats.expanded_neighbors += len(filtered_edges)
 
@@ -552,7 +520,6 @@ def compute_exposure(
             if neighbor in path_nodes:
                 continue
             next_depth = depth + 1
-            # Exposure decays multiplicatively with every traversed relationship.
             new_score = current_score * edge["edge_score"] * float(edge.get("directional_multiplier") or 1.0) * hop_decay(next_depth)
             if new_score <= best_score_by_node.get(neighbor, 0.0):
                 continue
@@ -576,12 +543,11 @@ def compute_exposure(
                 (-new_score, next(seq), neighbor, next_depth, new_score, next_path_nodes, next_path_edges, source_key),
             )
 
-    stats.hub_nodes_suppressed = len(suppressed_hubs)
     rows = []
     for record in results.values():
         node = nodes[record["node_key"]]
         source_node = nodes[record["source_risk_node"]]
-        direct_hit = is_direct_sanctioned_account(node, record["source_risk_node"], record["depth"])
+        direct_hit = is_direct_sanctioned_wallet(node, record["source_risk_node"], record["depth"])
         rows.append(
             {
                 "node_key": record["node_key"],
@@ -599,7 +565,6 @@ def compute_exposure(
                 "computed_at": dt.datetime.combine(today, dt.time(11, 0)),
             }
         )
-    stats.rows_written = len(rows)
     primary_rows_by_key = {row["node_key"]: row for row in rows}
     derived_rows = compute_derived_anchor_rows(
         primary_rows_by_key,
@@ -607,7 +572,6 @@ def compute_exposure(
         nodes,
         adjacency,
         today=today,
-        hub_degree_threshold=hub_degree_threshold,
         stats=stats,
     )
     merged_rows = {row["node_key"]: row for row in rows}
@@ -625,14 +589,14 @@ def write_exposure_rows(engine, rows: list[dict], *, reset: bool) -> None:
     batch_size = 500
     with engine.begin() as conn:
         if reset:
-            conn.execute(sa.delete(exposure_index))
+            conn.execute(sa.delete(crypto_exposure_index))
         if not rows:
             return
         for start in range(0, len(rows), batch_size):
             batch = rows[start:start + batch_size]
-            stmt = pg_insert(exposure_index).values(batch)
+            stmt = pg_insert(crypto_exposure_index).values(batch)
             stmt = stmt.on_conflict_do_update(
-                index_elements=[exposure_index.c.node_key],
+                index_elements=[crypto_exposure_index.c.node_key],
                 set_={
                     "exposure_score": stmt.excluded.exposure_score,
                     "best_depth": stmt.excluded.best_depth,
@@ -645,7 +609,7 @@ def write_exposure_rows(engine, rows: list[dict], *, reset: bool) -> None:
             conn.execute(stmt)
 
 
-def print_summary(stats: SearchStats, *, max_depth: int) -> None:
+def print_summary(stats: SearchStats) -> None:
     print(f"edges considered: {stats.edges_considered}")
     print(f"adjacency entries created: {stats.adjacency_entries_created}")
     print(f"reverse edges skipped due to policy: {stats.reverse_edges_skipped_due_to_directionality}")
@@ -654,19 +618,13 @@ def print_summary(stats: SearchStats, *, max_depth: int) -> None:
     print(f"risk anchors: {stats.risk_anchors}")
     print(f"exposure rows written: {stats.rows_written}")
     print(f"max depth reached: {stats.max_depth_reached}")
-    print(f"hub nodes suppressed: {stats.hub_nodes_suppressed}")
     print(f"derived anchor candidates: {stats.derived_anchor_candidates}")
     print(f"derived anchor rows: {stats.derived_anchor_rows}")
     print(f"derived anchor suppressed rows: {stats.derived_anchor_suppressed_rows}")
     print(f"average neighbors expanded: {stats.average_neighbors_expanded:.2f}")
     print()
     print("SQL check:")
-    print("select count(*) from exposure_index;")
-    print()
-    print("select node_key, exposure_score, best_depth, reason")
-    print("from exposure_index")
-    print("order by exposure_score desc")
-    print("limit 10;")
+    print("select count(*) from crypto_exposure_index;")
 
 
 def main() -> None:
@@ -680,14 +638,13 @@ def main() -> None:
         max_depth=args.max_depth,
         top_k=args.top_k,
         min_score=args.min_score,
-        hub_degree_threshold=args.hub_degree_threshold,
         today=today,
     )
     stats.edges_considered = load_debug["edges_considered"]
     stats.adjacency_entries_created = load_debug["adjacency_entries_created"]
     stats.reverse_edges_skipped_due_to_directionality = load_debug["reverse_edges_skipped_due_to_directionality"]
     write_exposure_rows(engine, rows, reset=args.reset)
-    print_summary(stats, max_depth=args.max_depth)
+    print_summary(stats)
 
 
 if __name__ == "__main__":
