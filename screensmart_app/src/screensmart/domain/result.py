@@ -19,6 +19,7 @@ class ScreeningResult(BaseModel):
     matched_name: Optional[str] = None
     reasons: list[str] = Field(default_factory=list)
     model_name: str = "fuzzy-fallback"
+    risk_score: float = 0.0          # payment-context risk in [0,1] (lowers thresholds)
     latency_ms: float = 0.0
 
 

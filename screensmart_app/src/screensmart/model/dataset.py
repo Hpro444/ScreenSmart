@@ -16,7 +16,7 @@ import numpy as np
 from ..indexing.index import SanctionsIndex
 from ..matching.scoring import build_features
 from ..normalization import norm
-from ..synthesis import degrade, random_clean_name, COMMON_BAIT
+from ..synthesis import degrade, random_clean_name, random_dob, COMMON_BAIT
 from ..domain.enums import EntitySchema
 
 _COUNTRY_POOL = ["us", "gb", "de", "fr", "ng", "in", "br", "jp", "ae", "sg", "za", "mx"]
@@ -40,8 +40,10 @@ def _country_for_positive(entity, rng: random.Random) -> str:
 
 def build_training_pairs(index: SanctionsIndex, *, seed: int = 42,
                          max_entities: int = 15000,
+                         train_ids: set[str] | None = None,
                          ) -> tuple[np.ndarray, np.ndarray]:
-    """Return (X feature matrix, y labels)."""
+    """Return (X feature matrix, y labels). If `train_ids` is given, positives are drawn
+    ONLY from those entities (the rest are held out for an entity-disjoint test set)."""
     rng = random.Random(seed)
     rows: list[list[float]] = []
     labels: list[int] = []
@@ -49,31 +51,39 @@ def build_training_pairs(index: SanctionsIndex, *, seed: int = 42,
     # focus positives on the entity types a fiat name-payment actually targets
     pool = [e for e in index.entities
             if e.schema_ in (EntitySchema.PERSON, EntitySchema.ORGANIZATION,
-                             EntitySchema.LEGAL_ENTITY, EntitySchema.COMPANY)]
+                             EntitySchema.LEGAL_ENTITY, EntitySchema.COMPANY)
+            and (train_ids is None or e.id in train_ids)]
     rng.shuffle(pool)
     pool = pool[:max_entities]
 
     for e in pool:
         pos_country = _country_for_positive(e, rng)
+        # secondary identifiers attached to the TRUE owner's payments (sometimes) —
+        # teaches the model that a DOB/ID hit is strong evidence FOR a match.
+        p_dob = e.dob if (e.dob and rng.random() < 0.45) else None
+        p_ids = [rng.choice(e.identifiers)] if (e.identifiers and rng.random() < 0.25) else None
 
         # --- positive 1: an alias resolves to its own entity ---
         if e.aliases:
             alias = rng.choice(e.aliases)
-            feats, _, _ = build_features(alias, pos_country, e, index)
+            feats, _, _ = build_features(alias, pos_country, e, index, query_dob=p_dob, query_ids=p_ids)
             rows.append(feats.to_vector()); labels.append(1)
 
         # --- positive 2: a degraded spelling of a name ---
         base = rng.choice(e.all_names)
         dname, _ = degrade(base, rng)
-        feats, _, _ = build_features(dname, pos_country, e, index)
+        feats, _, _ = build_features(dname, pos_country, e, index, query_dob=p_dob, query_ids=p_ids)
         rows.append(feats.to_vector()); labels.append(1)
 
-        # --- hard negative: same query, a DIFFERENT entity recall surfaces ---
+        # --- hard negative: same query name, a DIFFERENT entity recall surfaces. Attach
+        #     the real owner's DOB so it MISMATCHES the other entity — teaches the model
+        #     that a name collision with a DOB mismatch is NOT a match (the FP killer). ---
         neg_country = rng.choice(_COUNTRY_POOL)
+        neg_dob = (e.dob or random_dob(rng)) if rng.random() < 0.5 else None
         for cid in index.recall(norm(dname), max_candidates=8):
             if cid != e.id:
                 other = index.entity_by_id[cid]
-                feats, _, _ = build_features(dname, neg_country, other, index)
+                feats, _, _ = build_features(dname, neg_country, other, index, query_dob=neg_dob)
                 rows.append(feats.to_vector()); labels.append(0)
                 break
 
@@ -84,9 +94,10 @@ def build_training_pairs(index: SanctionsIndex, *, seed: int = 42,
     bait_rounds = max(1, len(pool) // (len(COMMON_BAIT) * 8))
     for _ in range(bait_rounds):
         for nm in COMMON_BAIT:
+            b_dob = random_dob(rng) if rng.random() < 0.5 else None   # mismatching DOB -> clears
             for cid in index.recall(norm(nm), max_candidates=6):
                 other = index.entity_by_id[cid]
-                feats, _, _ = build_features(nm, rng.choice(_COUNTRY_POOL), other, index)
+                feats, _, _ = build_features(nm, rng.choice(_COUNTRY_POOL), other, index, query_dob=b_dob)
                 rows.append(feats.to_vector()); labels.append(0)
 
     # --- easy negatives: random clean names vs whatever they collide with ---
@@ -97,7 +108,8 @@ def build_training_pairs(index: SanctionsIndex, *, seed: int = 42,
         if not cands:
             continue
         other = index.entity_by_id[rng.choice(cands)]
-        feats, _, _ = build_features(nm, rng.choice(_COUNTRY_POOL), other, index)
+        e_dob = random_dob(rng) if rng.random() < 0.3 else None
+        feats, _, _ = build_features(nm, rng.choice(_COUNTRY_POOL), other, index, query_dob=e_dob)
         rows.append(feats.to_vector()); labels.append(0)
 
     X = np.asarray(rows, dtype=float)

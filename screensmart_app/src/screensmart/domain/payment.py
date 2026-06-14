@@ -20,6 +20,15 @@ class PaymentInstruction(BaseModel):
     bene_name: str = ""
     bene_country: str = ""
     wallet: str = ""
+    # secondary identifiers (often absent on a real payment; used when present)
+    bene_dob: Optional[str] = None            # ISO birth date of the beneficiary
+    bene_passport: Optional[str] = None       # passport number
+    bene_national_id: Optional[str] = None    # national / tax ID
+
+    @property
+    def identifiers(self) -> list[str]:
+        """All identity numbers carried on the payment (passport + national id)."""
+        return [v for v in (self.bene_passport, self.bene_national_id) if v]
 
     @model_validator(mode="after")
     def _check_channel(self) -> "PaymentInstruction":

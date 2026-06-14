@@ -166,6 +166,7 @@ if pep_path.exists():
 # =============================================================== save processed
 keep = ["id", "schema", "name", "aliases", "n_aliases", "name_tokens",
         "primary_country", "countries", "primary_program", "sanctions",
+        "birth_date", "identifiers",          # secondary identifiers (DOB + passport/national IDs)
         "first_seen", "datasets" if "datasets" in san.columns else "dataset"]
 keep = [c for c in keep if c in san.columns]
 san[keep].to_parquet(PROC / "sanctions_clean.parquet", index=False)
