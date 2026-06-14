@@ -173,8 +173,12 @@ export default function Background({ intensity = 1, ambient = 0, onPick }) {
       const dt = Math.min(2.4, (now - last) / 16.67)
       last = now
 
+      // fade the previous frame toward the background so the motion trail dissipates after
+      // ~0.3s. Frame-rate independent (scaled by dt) so it clears consistently; the higher
+      // alpha (vs 0.2) means trails fully vanish instead of leaving faint permanent streaks.
       ctx.globalCompositeOperation = 'source-over'
-      ctx.fillStyle = `rgba(${BG[0]},${BG[1]},${BG[2]},0.2)`
+      const fade = 1 - Math.pow(1 - 0.16, dt)
+      ctx.fillStyle = `rgba(${BG[0]},${BG[1]},${BG[2]},${fade})`
       ctx.fillRect(0, 0, W, H)
 
       if (ambient > 0) {

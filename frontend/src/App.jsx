@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Background from './Background.jsx'
 import { feed } from './feed.js'
-import { getReview, decide, getNode } from './api.js'
+import { getReview, decide, getNode, streamChat } from './api.js'
 
 const REDUCE = typeof window !== 'undefined' && window.matchMedia
   && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -178,7 +178,9 @@ function Review({ onBack }) {
   }, [items, sel])
 
   const needle = q.trim().toLowerCase()
-  const filtered = items.filter((d) => {
+  // memoised so the filter (over thousands of rows) only re-runs on real input changes —
+  // NOT on every live verdict tick (which would jank scrolling)
+  const filtered = useMemo(() => items.filter((d) => {
     if (graphOnly && !hasGraph(d)) return false
     if (!needle) return true
     const t = d.txn || {}
@@ -189,18 +191,19 @@ function Review({ onBack }) {
     ].join(' ')
     return `${t.bene_name || ''} ${t.wallet || ''} ${t.bene_country || ''} ${d.txn_id || ''} ${d.combined_verdict || ''} ${reasons}`
       .toLowerCase().includes(needle)
-  })
+  }), [items, needle, graphOnly])
 
   // record the analyst decision (persists + flags the payee account for block/escalate),
   // then optimistically drop it from the queue
-  const resolve = (txnId, decision) => {
+  const resolve = useCallback((txnId, decision) => {
     decide(txnId, decision).catch(() => {})
     setItems((xs) => xs.filter((i) => i.txn_id !== txnId))
     setSel((s) => (s && s.txn_id === txnId ? null : s))
-  }
+  }, [])
+  const onSelect = useCallback((d) => setSel(d), [])
 
   const VISIBLE = 120
-  const visible = filtered.slice(0, VISIBLE)
+  const visible = useMemo(() => filtered.slice(0, VISIBLE), [filtered])
   const meta = TABS[tab]
   // the badge should reflect the TRUE total for this status (from the live counts), not the
   // loaded slice — cleared can be 40k+ while we only fetch the latest ~1.5k for the list.
@@ -250,7 +253,7 @@ function Review({ onBack }) {
                 ? <div className="muted pad">{items.length ? 'No matches for this filter.' : meta.empty}</div>
                 : <>
                     {visible.map((d) => (
-                      <QueueItem key={d.txn_id} d={d} tab={tab} active={sel?.txn_id === d.txn_id} onClick={() => setSel(d)} />
+                      <QueueItem key={d.txn_id} d={d} tab={tab} active={sel?.txn_id === d.txn_id} onSelect={onSelect} />
                     ))}
                     {filtered.length > visible.length &&
                       <div className="queue-more">+{filtered.length - visible.length} more — refine your search</div>}
@@ -266,7 +269,7 @@ function Review({ onBack }) {
   )
 }
 
-function QueueItem({ d, tab, active, onClick }) {
+const QueueItem = memo(function QueueItem({ d, tab, active, onSelect }) {
   const t = d.txn || {}
   const crypto = !!t.wallet && !t.bene_name
   const name = t.bene_name || (t.wallet ? shortWallet(t.wallet) : d.txn_id)
@@ -275,7 +278,7 @@ function QueueItem({ d, tab, active, onClick }) {
   const sev = st === 'allowed' ? 'ok' : st === 'blocked' ? 'blk' : 'rev'
   const label = st === 'allowed' ? 'CLEARED' : st === 'blocked' ? 'BLOCKED' : 'REVIEW'
   return (
-    <button className={'qitem' + (active ? ' active' : '')} onClick={onClick}>
+    <button className={'qitem' + (active ? ' active' : '')} onClick={() => onSelect(d)}>
       <span className="avatar" style={{ '--h': hue(name) }}>{crypto ? '◈' : initials(name)}</span>
       <span className="qtext">
         <span className="qname">{name}{hasGraph(d) && <span className="qgraph" title="has exposure graph">⬡</span>}</span>
@@ -287,7 +290,7 @@ function QueueItem({ d, tab, active, onClick }) {
       </span>
     </button>
   )
-}
+})
 
 function EmptyDetail() {
   return (
@@ -300,15 +303,61 @@ function EmptyDetail() {
   )
 }
 
-function Dossier({ d, onResolve, hideHead }) {
+const Dossier = memo(function Dossier({ d, onResolve, hideHead }) {
   const t = d.txn || {}
   const crypto = !!t.wallet && !t.bene_name
   const name = t.bene_name || t.wallet || d.txn_id
   const confidence = Math.max(Number(d.name_result?.score) || 0, Number(d.exposure_result?.score) || 0)
   const [nodeKey, setNodeKey] = useState(null)   // drill-into-graph-node explorer
+  const [chatOpen, setChatOpen] = useState(false)
+  // chat session lives here (not in the drawer) so the stream keeps running — and finishes
+  // into the persisted session — even if the user closes the chat. It only resets/aborts
+  // when the reviewed profile changes.
+  const [chat, setChat] = useState({ messages: [], busy: false })
+  const chatRef = useRef(chat); useEffect(() => { chatRef.current = chat }, [chat])
+  const chatAbort = useRef(null)
+  const startedFor = useRef(null)
+
+  const sendChat = useCallback((text) => {
+    const history = text ? [...chatRef.current.messages, { role: 'user', content: text }] : []
+    setChat({ messages: [...history, { role: 'assistant', content: '' }], busy: true })
+    if (chatAbort.current) chatAbort.current.abort()
+    chatAbort.current = new AbortController()
+    streamChat(d, history, (tok) => setChat((c) => {
+      const m = c.messages.slice()
+      m[m.length - 1] = { role: 'assistant', content: m[m.length - 1].content + tok }
+      return { ...c, messages: m }
+    }), chatAbort.current.signal)
+      .catch((e) => {
+        if (e && e.name === 'AbortError') return
+        setChat((c) => {
+          const m = c.messages.slice()
+          if (m.length) m[m.length - 1] = { role: 'assistant', content: '⚠️ Assistant unavailable — is the chatbot / Ollama service reachable?' }
+          return { ...c, messages: m }
+        })
+      })
+      .finally(() => setChat((c) => ({ ...c, busy: false })))
+  }, [d])
+
+  // profile changed → abort any in-flight stream and clear the session
+  useEffect(() => {
+    if (chatAbort.current) chatAbort.current.abort()
+    setChat({ messages: [], busy: false })
+    startedFor.current = null
+  }, [d.txn_id])
+
+  // fetch the initial explanation once per profile, the first time the chat is opened
+  useEffect(() => {
+    if (chatOpen && startedFor.current !== d.txn_id) {
+      startedFor.current = d.txn_id
+      sendChat(null)
+    }
+  }, [chatOpen, d.txn_id, sendChat])
+
   return (
     <div className="dossier">
       {nodeKey && <NodeExplorer startKey={nodeKey} onClose={() => setNodeKey(null)} />}
+      {chatOpen && <ChatPanel dossier={d} chat={chat} onSend={sendChat} onClose={() => setChatOpen(false)} />}
       {hideHead ? (
         <h2 className="modal-name">{name}</h2>
       ) : (
@@ -323,6 +372,9 @@ function Dossier({ d, onResolve, hideHead }) {
               {d.decided_at && <span className="tag">{fmtTime(d.decided_at)}</span>}
             </div>
           </div>
+          <button className="explain-btn" onClick={() => setChatOpen(true)} title="Ask the assistant">
+            💬 Explain
+          </button>
         </div>
       )}
 
@@ -382,7 +434,7 @@ function Dossier({ d, onResolve, hideHead }) {
       )}
     </div>
   )
-}
+})
 
 function NodeExplorer({ startKey, onClose }) {
   const [stack, setStack] = useState([startKey])   // navigation history of node keys
@@ -523,6 +575,64 @@ function NodeExplorer({ startKey, onClose }) {
   )
 }
 
+// Presentational drawer. The conversation + streaming live in the parent (Dossier) so the
+// reply keeps streaming even after this drawer is closed.
+function ChatPanel({ dossier, chat, onSend, onClose }) {
+  const [input, setInput] = useState('')
+  const bodyRef = useRef(null)
+  const busy = chat.busy
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight }, [chat.messages])
+
+  const submit = (e) => {
+    e.preventDefault()
+    const text = input.trim()
+    if (!text || busy) return
+    setInput('')
+    onSend(text)
+  }
+  const who = dossier.txn?.bene_name || dossier.txn?.wallet || dossier.txn_id
+  return (
+    <div className="chat-drawer">
+      <div className="chat-head">
+        <span className="chat-title">💬 Why was this flagged?</span>
+        <span className="chat-sub">{clip(who, 26)}</span>
+        <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
+      </div>
+      <div className="chat-body" ref={bodyRef}>
+        {chat.messages.map((m, i) => (
+          <div key={i} className={'chat-msg ' + m.role}>
+            {m.role === 'assistant' && <span className="chat-ava">◈</span>}
+            <div className="chat-bubble">
+              {m.content
+                ? m.content.split('\n').map((ln, j) => <p key={j}>{renderBold(ln)}</p>)
+                : <span className="chat-typing"><i /><i /><i /></span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      <form className="chat-input" onSubmit={submit}>
+        <input value={input} onChange={(e) => setInput(e.target.value)}
+               placeholder="Ask a follow-up…" disabled={busy && chat.messages.length <= 1} />
+        <button type="submit" disabled={busy || !input.trim()}>↑</button>
+      </form>
+    </div>
+  )
+}
+
+function renderBold(line) {
+  // tiny **bold** renderer
+  const parts = line.split(/(\*\*[^*]+\*\*)/g)
+  return parts.map((p, i) => p.startsWith('**') && p.endsWith('**')
+    ? <strong key={i}>{p.slice(2, -2)}</strong> : <span key={i}>{p}</span>)
+}
+
 function NodeChips({ items, onPick }) {
   return (
     <div className="node-chips">
@@ -557,6 +667,23 @@ function CounterpartyList({ items, onPick }) {
   )
 }
 
+// SVG donut — composites cleanly (no conic-gradient repaint lag while the panel scrolls)
+function Ring({ pct, cls }) {
+  const R = 24, C = 2 * Math.PI * R
+  const off = C * (1 - Math.max(0, Math.min(100, pct)) / 100)
+  const col = cls === 'blk' ? '#f74856' : cls === 'rev' ? '#f5c32d' : '#28e68c'
+  return (
+    <svg width="62" height="62" viewBox="0 0 62 62" className="ringsvg">
+      <circle cx="31" cy="31" r={R} fill="none" stroke="rgba(255,255,255,0.09)" strokeWidth="6" />
+      <circle cx="31" cy="31" r={R} fill="none" stroke={col} strokeWidth="6" strokeLinecap="round"
+              strokeDasharray={C} strokeDashoffset={off} transform="rotate(-90 31 31)" />
+      <text x="31" y="35" textAnchor="middle" className="ringsvg-t">
+        {pct}<tspan className="ringsvg-s">%</tspan>
+      </text>
+    </svg>
+  )
+}
+
 function RiskMeter({ score }) {
   const pct = Math.round(Math.max(0, Math.min(1, Number(score) || 0)) * 100)
   const band = pct >= 80 ? 'High' : pct >= 40 ? 'Elevated' : 'Low'
@@ -585,9 +712,7 @@ function ModuleCard({ title, icon, r, onNodeClick }) {
         <span className={'pill sm ' + verdictClass(r.verdict)}>{r.verdict}</span>
       </div>
       <div className="mod-row">
-        <div className={'ring ' + verdictClass(r.verdict)} style={{ '--p': pct }}>
-          <span>{pct}<small>%</small></span>
-        </div>
+        <Ring pct={pct} cls={verdictClass(r.verdict)} />
         <div className="mod-info">
           <Field k="Matched entity" v={r.matched_name} />
           <Field k="Entity ID" v={r.entity_id} />

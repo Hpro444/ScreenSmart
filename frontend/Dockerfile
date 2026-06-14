@@ -8,6 +8,7 @@ COPY . .
 # Override at build time with --build-arg VITE_API_URL=... / VITE_WS_URL=... if needed.
 ARG VITE_API_URL
 ARG VITE_WS_URL
+ARG VITE_CHAT_URL
 RUN npm run build
 
 FROM nginx:alpine
