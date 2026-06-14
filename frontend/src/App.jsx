@@ -184,6 +184,8 @@ function Review({ onBack }) {
     setSel((s) => (s && s.txn_id === txnId ? null : s))
   }
 
+  const VISIBLE = 120
+  const visible = filtered.slice(0, VISIBLE)
   const meta = TABS[tab]
   return (
     <main className="review">
@@ -226,9 +228,11 @@ function Review({ onBack }) {
             {err && <div className="err pad">{err}</div>}
             {!loading && !err && filtered.length === 0 &&
               <div className="muted pad">{items.length ? 'No matches for this filter.' : meta.empty}</div>}
-            {filtered.map((d) => (
+            {visible.map((d) => (
               <QueueItem key={d.txn_id} d={d} tab={tab} active={sel?.txn_id === d.txn_id} onClick={() => setSel(d)} />
             ))}
+            {filtered.length > visible.length &&
+              <div className="queue-more">+{filtered.length - visible.length} more — refine your search</div>}
           </div>
         </aside>
 
@@ -445,13 +449,16 @@ function ExposureGraph({ graph }) {
   const nodes = graph?.nodes || []
   const edges = graph?.edges || []
   if (!nodes.length) return null
-  const R = 17, GAP = 150, PADX = 36, CY = 56, H = 132
+  const R = 17, GAP = 150, PADX = 50, CY = 56, H = 132
   const W = PADX * 2 + Math.max(1, nodes.length - 1) * GAP
   const xs = nodes.map((_, i) => PADX + i * GAP)
   return (
     <div className="xgraph">
       <div className="xgraph-scroll">
-        <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="xgraph-svg">
+        {/* responsive: scales to the panel width so the final (red) source node is always
+            in view, no horizontal scrolling needed */}
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="xMidYMid meet"
+             className="xgraph-svg">
           <defs>
             <marker id="xg-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto">
               <path d="M0,0 L6.5,3 L0,6 Z" fill="rgba(255,255,255,0.55)" />

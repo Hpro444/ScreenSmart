@@ -76,16 +76,15 @@ def _load_accounts() -> dict:
         from sqlalchemy import create_engine, text
         eng = create_engine(url)
         with eng.connect() as c:
-            # Per depth: deeper paths (2-hop) carry a low raw exposure_score but still reach a
-            # SANCTIONED/SUSPICIOUS anchor (→ high risk_score → REVIEW), so sample by depth and
-            # prefer paths whose source is sanctioned, NOT by exposure_score.
+            # Per depth: only paths that terminate at a SANCTIONED anchor, so every exposure
+            # graph runs all the way to a red source node. Deeper (2-hop) paths carry a low
+            # raw exposure_score but still get a high risk_score → REVIEW, so sample by depth.
             for d in range(MIN_HOPS, MAX_HOPS + 1):
                 rows = c.execute(text(
                     "SELECT ei.node_key FROM exposure_index ei "
                     "JOIN graph_nodes gn ON gn.node_key = ei.source_risk_node "
-                    "WHERE ei.best_depth = :d "
-                    "ORDER BY (gn.risk_level = 'SANCTIONED') DESC, ei.exposure_score DESC "
-                    "LIMIT 3000"), {"d": d})
+                    "WHERE ei.best_depth = :d AND gn.risk_level = 'SANCTIONED' "
+                    "ORDER BY ei.exposure_score DESC LIMIT 4000"), {"d": d})
                 keys = [r[0] for r in rows]
                 if keys:
                     pools["by_depth"][d] = keys
